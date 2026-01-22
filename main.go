@@ -271,7 +271,7 @@ func main() {
 	enumerateDevices()
 
 	// 设置低优先级
-	setLowPriorityDefaults(true, false)
+	setLowPriorityDefaults(true, true)
 	log.Printf("开始后台监控：每 %s 检查一次前台进程。", cfg.Interval)
 
 	// 启动定时器
