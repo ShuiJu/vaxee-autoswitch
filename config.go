@@ -11,6 +11,8 @@ import (
 
 const configFileName = "vaxee_autoswitch.conf"
 
+// ---------------- Perf/Poll ----------------
+
 type PerfMode byte
 
 const (
@@ -33,19 +35,60 @@ const (
 	Poll4000 PollingRate = 4000
 )
 
+// ---------------- Trajectory ----------------
+// 追踪轨迹：顺滑灵敏/稳定易控
+// 抓包确认：cmd=0x13，byte3=0x02 表示“顺滑灵敏”，byte3=0x01 表示“稳定易控”。[1](https://maynoothuniversity-my.sharepoint.com/personal/shengwei_huang_2022_mumail_ie/Documents/Microsoft%20Copilot%20Chat%20Files/config.txt)
+type TrajectoryMode byte
+
+const (
+	TrajSmoothSensitive TrajectoryMode = 2 // 顺滑灵敏：0e a5 13 02 01 00 ... [1](https://maynoothuniversity-my.sharepoint.com/personal/shengwei_huang_2022_mumail_ie/Documents/Microsoft%20Copilot%20Chat%20Files/config.txt)
+	TrajStableControl   TrajectoryMode = 1 // 稳定易控：0e a5 13 01 01 00 ... [1](https://maynoothuniversity-my.sharepoint.com/personal/shengwei_huang_2022_mumail_ie/Documents/Microsoft%20Copilot%20Chat%20Files/config.txt)
+)
+
+func trajName(t TrajectoryMode) string {
+	switch t {
+	case TrajSmoothSensitive:
+		return "smooth_sensitive"
+	case TrajStableControl:
+		return "stable_control"
+	default:
+		return fmt.Sprintf("0x%02x", byte(t))
+	}
+}
+
+func parseTraj(s string) (TrajectoryMode, error) {
+	switch strings.ToLower(strings.TrimSpace(s)) {
+	case "smooth_sensitive", "smooth", "sensitive", "smoothsens":
+		return TrajSmoothSensitive, nil
+	case "stable_control", "stable", "control", "stablectrl":
+		return TrajStableControl, nil
+	default:
+		return 0, fmt.Errorf("unknown trajectory mode: %s", s)
+	}
+}
+
+// ---------------- Config ----------------
+
 type Config struct {
-	Interval     time.Duration
-	HitMode      PerfMode
-	HitPoll      PollingRate
-	DefaultMode  PerfMode
-	DefaultPoll  PollingRate
+	Interval time.Duration
+
+	HitMode PerfMode
+	HitPoll PollingRate
+	HitTraj TrajectoryMode
+
+	DefaultMode PerfMode
+	DefaultPoll PollingRate
+	DefaultTraj TrajectoryMode
+
 	Whitelist    []string
 	WhitelistSet map[string]struct{}
 	ConfigPath   string
 }
 
 func defaultConfigText() string {
-	// 预设：命中白名单 -> competitive_ms_off + 1000Hz，否则 -> standard_ms_off + 1000Hz
+	// 预设建议：
+	// 命中白名单：competitive_ms_off + 1000Hz + 顺滑灵敏（更跟手）
+	// 未命中：standard_ms_off + 1000Hz + 稳定易控（更稳）
 	return `# VAXEE AutoSwitch 配置文件
 # --------------------------------------------
 # 说明：
@@ -53,18 +96,26 @@ func defaultConfigText() string {
 # 2) 其余非空、非 # 开头的行，会被当作“白名单程序名”（每行一个，例如 cs2.exe）
 #
 # 可配置项：
-# interval_seconds=60                # 检查前台程序间隔（秒），默认 60
-# hit_mode=competitive_ms_off        # 命中白名单时性能模式：standard_ms_off / competitive_ms_off / competitive_ms_on / standard_ms_on
-# hit_poll=1000                      # 命中白名单时回报率：1000 / 2000 / 4000
-# default_mode=standard_ms_off       # 未命中时性能模式
-# default_poll=1000                  # 未命中时回报率
+# interval_seconds=60
+#
+# hit_mode=competitive_ms_off      # standard_ms_off / competitive_ms_off / competitive_ms_on / standard_ms_on
+# hit_poll=1000                    # 1000 / 2000 / 4000
+# hit_traj=smooth_sensitive        # smooth_sensitive / stable_control (顺滑灵敏/稳定易控)
+#
+# default_mode=standard_ms_off
+# default_poll=1000
+# default_traj=smooth_sensitive
 #
 # --------------------------------------------
 interval_seconds=60
+
 hit_mode=competitive_ms_off
 hit_poll=1000
+hit_traj=smooth_sensitive
+
 default_mode=standard_ms_off
 default_poll=1000
+default_traj=smooth_sensitive
 
 # 白名单示例（每行一个进程名）：
 # cs2.exe
@@ -90,11 +141,16 @@ func loadConfig(path string) (*Config, time.Time, error) {
 	}
 
 	cfg := &Config{
-		Interval:     60 * time.Second,
-		HitMode:      PerfCompetitiveMSOff,
-		HitPoll:      Poll1000,
-		DefaultMode:  PerfStandardMSOff,
-		DefaultPoll:  Poll1000,
+		Interval: 60 * time.Second,
+
+		HitMode: PerfCompetitiveMSOff,
+		HitPoll: Poll1000,
+		HitTraj: TrajSmoothSensitive,
+
+		DefaultMode: PerfStandardMSOff,
+		DefaultPoll: Poll1000,
+		DefaultTraj: TrajStableControl,
+
 		Whitelist:    []string{},
 		WhitelistSet: map[string]struct{}{},
 		ConfigPath:   path,
@@ -142,6 +198,13 @@ func loadConfig(path string) (*Config, time.Time, error) {
 					return nil, time.Time{}, e
 				}
 
+			case "hit_traj":
+				t, e := parseTraj(val)
+				if e != nil {
+					return nil, time.Time{}, e
+				}
+				cfg.HitTraj = t
+
 			case "default_mode":
 				m, e := parsePerf(val)
 				if e != nil {
@@ -158,6 +221,14 @@ func loadConfig(path string) (*Config, time.Time, error) {
 				if _, e := pollingToYY(cfg.DefaultPoll); e != nil {
 					return nil, time.Time{}, e
 				}
+
+			case "default_traj":
+				t, e := parseTraj(val)
+				if e != nil {
+					return nil, time.Time{}, e
+				}
+				cfg.DefaultTraj = t
+
 			default:
 				// 未知 key 忽略，便于扩展
 			}

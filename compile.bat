@@ -17,4 +17,5 @@ if errorlevel 1 (
 )
 
 echo Finished
-if exist "vaxee-autoswitch.exe" pause
+
+"vaxee-autoswitch.exe"

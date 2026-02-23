@@ -549,3 +549,42 @@ func EnumerateAllHidDevices() ([]VaxeeDeviceInfo, error) {
 	}
 	return out, nil
 }
+
+// ==================== 追踪轨迹（Tracking Trajectory） ====================
+// 抓包确认：
+// 顺滑灵敏 -> SET_REPORT Data Fragment: 0e a5 13 02 01 00 ...（后续全 0）
+// 稳定易控 -> SET_REPORT Data Fragment: 0e a5 13 01 01 00 ...（后续全 0）[1](https://maynoothuniversity-my.sharepoint.com/personal/shengwei_huang_2022_mumail_ie/Documents/Microsoft%20Copilot%20Chat%20Files/config.txt)
+//
+// 注意：与你现有 buildReportSized 不同，追踪轨迹的“模式位”在 byte3（0x02/0x01），而不是 byte5(val)。[1](https://maynoothuniversity-my.sharepoint.com/personal/shengwei_huang_2022_mumail_ie/Documents/Microsoft%20Copilot%20Chat%20Files/config.txt)[1](https://maynoothuniversity-my.sharepoint.com/personal/shengwei_huang_2022_mumail_ie/Documents/Microsoft%20Copilot%20Chat%20Files/config.txt)
+
+func buildTrajectoryReportSized(total int, mode TrajectoryMode) []byte {
+	if total < 6 {
+		total = 6
+	}
+	buf := make([]byte, total)
+	buf[0] = 0x0e
+	buf[1] = 0xa5
+	buf[2] = 0x13       // cmd/page
+	buf[3] = byte(mode) // 0x02=顺滑灵敏, 0x01=稳定易控
+	buf[4] = 0x01
+	buf[5] = 0x00
+	return buf
+}
+
+func ApplyVaxeeTrajectory(path string, mode TrajectoryMode) error {
+	// 重新查一次控制通道（保证 FeatureLen 正确）
+	dev, err := FindOneVaxeeDevice()
+	if err == nil && dev.Path != "" {
+		path = dev.Path
+	}
+	flen := int(dev.FeatureLen)
+	if flen <= 0 {
+		flen = 64
+	}
+
+	if err := sendFeatureReport(path, buildTrajectoryReportSized(flen, mode)); err != nil {
+		return fmt.Errorf("trajectory feature report failed: %w", err)
+	}
+	time.Sleep(25 * time.Millisecond)
+	return nil
+}
