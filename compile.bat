@@ -7,7 +7,7 @@ if exist "vaxee-autoswitch.exe" (
 
 :: compile
 echo Compiling...
-go build -trimpath -ldflags "-s -w" -o vaxee-autoswitch.exe
+go build -trimpath -ldflags "-s -w -H=windowsgui" -o vaxee-autoswitch.exe
 
 :: Check if success
 if errorlevel 1 (
