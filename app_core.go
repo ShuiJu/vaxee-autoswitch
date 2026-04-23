@@ -23,7 +23,8 @@ type AutoSwitchApp struct {
 	cfg     *Config
 	modTime time.Time
 
-	wakeCh chan struct{}
+	wakeCh         chan struct{}
+	captureRequest uint64
 }
 
 func NewAutoSwitchApp(cfgPath string) (*AutoSwitchApp, error) {
@@ -112,6 +113,78 @@ func (a *AutoSwitchApp) UpdateProfile(profile ProfileKind, perf PerfMode, poll P
 	a.cfg = reloaded
 	a.modTime = modTime
 	a.signalWake()
+	return nil
+}
+
+func (a *AutoSwitchApp) ScheduleForegroundAppend(delay time.Duration) {
+	a.mu.Lock()
+	a.captureRequest++
+	requestID := a.captureRequest
+	a.mu.Unlock()
+
+	log.Printf("[CFG] scheduled delayed foreground capture in %s", delay)
+
+	go func() {
+		timer := time.NewTimer(delay)
+		defer timer.Stop()
+
+		<-timer.C
+
+		a.mu.RLock()
+		stale := requestID != a.captureRequest
+		a.mu.RUnlock()
+		if stale {
+			return
+		}
+
+		if err := a.appendForegroundProcess(requestID); err != nil {
+			log.Printf("[CFG] delayed foreground append failed: %v", err)
+		}
+	}()
+}
+
+func (a *AutoSwitchApp) CancelForegroundAppend() {
+	a.mu.Lock()
+	a.captureRequest++
+	a.mu.Unlock()
+}
+
+func (a *AutoSwitchApp) appendForegroundProcess(requestID uint64) error {
+	proc, err := ForegroundProcessName()
+	if err != nil {
+		return fmt.Errorf("read foreground process: %w", err)
+	}
+
+	proc = normalizeProcessName(proc)
+	if proc == "" {
+		return fmt.Errorf("foreground process name is empty")
+	}
+
+	a.mu.Lock()
+	defer a.mu.Unlock()
+
+	if requestID != a.captureRequest {
+		return nil
+	}
+
+	next := cloneConfig(a.cfg)
+	next.Whitelist = append(next.Whitelist, proc)
+	next.WhitelistSet[proc] = struct{}{}
+
+	if err := saveConfig(a.cfgPath, next); err != nil {
+		return err
+	}
+
+	reloaded, modTime, err := loadConfig(a.cfgPath)
+	if err != nil {
+		return err
+	}
+
+	a.cfg = reloaded
+	a.modTime = modTime
+	a.signalWake()
+
+	log.Printf("[CFG] appended delayed foreground process: %s", proc)
 	return nil
 }
 

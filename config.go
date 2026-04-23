@@ -88,6 +88,14 @@ type Config struct {
 
 var configWriteMu sync.Mutex
 
+func normalizeProcessName(name string) string {
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return ""
+	}
+	return strings.ToLower(filepath.Base(name))
+}
+
 func defaultConfigText() string {
 	// 预设建议：
 	// 命中白名单：competitive_ms_off + 1000Hz + 顺滑灵敏（更跟手）
@@ -290,7 +298,10 @@ func loadConfig(path string) (*Config, time.Time, error) {
 		}
 
 		// 白名单行：只取 basename，转小写
-		proc := strings.ToLower(filepath.Base(line))
+		proc := normalizeProcessName(line)
+		if proc == "" {
+			continue
+		}
 		cfg.Whitelist = append(cfg.Whitelist, proc)
 		cfg.WhitelistSet[proc] = struct{}{}
 	}

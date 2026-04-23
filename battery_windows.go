@@ -114,6 +114,24 @@ func ReadBatteryVAXEE(dev VaxeeDeviceInfo) (percent int, charging bool, ok bool)
 	return percent, charging, true
 }
 
+func BatteryStatusTextVAXEE() string {
+	dev, err := FindOneVaxeeDevice()
+	if err != nil {
+		return "Battery: N/A"
+	}
+
+	pct, chg, ok := ReadBatteryVAXEE(dev)
+	if !ok {
+		return "Battery: N/A"
+	}
+
+	state := "discharging"
+	if chg {
+		state = "charging"
+	}
+	return fmt.Sprintf("Battery: %d%% (%s)", pct, state)
+}
+
 func PrintBatteryVAXEE(dev VaxeeDeviceInfo) {
 	pct, chg, ok := ReadBatteryVAXEE(dev)
 	if !ok {

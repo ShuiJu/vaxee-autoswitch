@@ -242,13 +242,13 @@ func (g *guiState) init() error {
 		return err
 	}
 
-	mainHwnd, err := createTopLevelWindow(classMain, "VAXEE AutoSwitch", instance, 0, 0)
+	mainHwnd, err := createTopLevelWindow(classMain, appDisplayName, instance, 0, 0)
 	if err != nil {
 		return err
 	}
 	g.mainHwnd = mainHwnd
 
-	cfgHwnd, err := createTopLevelWindow(classCfg, "VAXEE AutoSwitch", instance, 430, 360)
+	cfgHwnd, err := createTopLevelWindow(classCfg, appDisplayName, instance, 430, 360)
 	if err != nil {
 		return err
 	}
@@ -371,7 +371,7 @@ func (g *guiState) addTrayIcon(icon uintptr) error {
 		HIcon:            icon,
 		UVersion:         notifyIconVersion4,
 	}
-	copyUTF16(g.trayIcon.SzTip[:], "VAXEE AutoSwitch")
+	copyUTF16(g.trayIcon.SzTip[:], appDisplayName)
 
 	r, _, err := procShellNotifyIconW.Call(nimAdd, uintptr(unsafe.Pointer(&g.trayIcon)))
 	if r == 0 {

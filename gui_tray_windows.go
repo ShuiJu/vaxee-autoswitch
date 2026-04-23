@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"syscall"
+	"time"
 	"unsafe"
 )
 
@@ -20,8 +21,11 @@ type guiState struct {
 	cfgHwnd   uintptr
 	statusHW  uintptr
 	uiFont    uintptr
+	appIcon   uintptr
+	appIconSm uintptr
 
 	currentProfile ProfileKind
+	statusNote     string
 
 	profileButtons map[ProfileKind]uintptr
 	perfButtons    map[PerfMode]uintptr
@@ -97,8 +101,8 @@ var (
 	procTranslateMessage = user32GUI.NewProc("TranslateMessage")
 	procDispatchMessageW = user32GUI.NewProc("DispatchMessageW")
 	procPostQuitMessage  = user32GUI.NewProc("PostQuitMessage")
+	procPostMessageW     = user32GUI.NewProc("PostMessageW")
 	procLoadCursorW      = user32GUI.NewProc("LoadCursorW")
-	procLoadIconW        = user32GUI.NewProc("LoadIconW")
 	procSendMessageW     = user32GUI.NewProc("SendMessageW")
 	procSetWindowTextW   = user32GUI.NewProc("SetWindowTextW")
 	procSetForegroundWin = user32GUI.NewProc("SetForegroundWindow")
@@ -106,6 +110,7 @@ var (
 	procCreatePopupMenu  = user32GUI.NewProc("CreatePopupMenu")
 	procAppendMenuW      = user32GUI.NewProc("AppendMenuW")
 	procTrackPopupMenu   = user32GUI.NewProc("TrackPopupMenu")
+	procDestroyMenu      = user32GUI.NewProc("DestroyMenu")
 	procMessageBoxW      = user32GUI.NewProc("MessageBoxW")
 
 	procGetModuleHandleW = kernel32GUI.NewProc("GetModuleHandleW")
@@ -124,11 +129,12 @@ const (
 
 	wmAppTray = 0x8000 + 1
 
+	wmNull    = 0x0000
 	wmCommand = 0x0111
 	wmClose   = 0x0010
+	wmContext = 0x007B
 	wmDestroy = 0x0002
 
-	wmLButtonUp  = 0x0202
 	wmLButtonDbl = 0x0203
 	wmRButtonUp  = 0x0205
 
@@ -173,8 +179,7 @@ const (
 	tpmBottomAlign = 0x0020
 	tpmRightButton = 0x0002
 
-	idiApplication = 32512
-	idcArrow       = 32512
+	idcArrow = 32512
 
 	idProfileHit     = 1001
 	idProfileDefault = 1002
@@ -190,9 +195,13 @@ const (
 
 	idTrajSmooth = 1301
 	idTrajStable = 1302
+	idCaptureFG  = 1401
 
 	idMenuOpen = 9001
 	idMenuExit = 9002
+
+	buttonExtraWidth  = 10
+	buttonExtraHeight = 5
 )
 
 func runGUIApp() error {
@@ -234,25 +243,35 @@ func (g *guiState) init() error {
 	instance, _, _ := procGetModuleHandleW.Call(0)
 	g.hInstance = instance
 
-	icon, _, _ := procLoadIconW.Call(0, idiApplication)
+	icon, smallIcon, err := loadEmbeddedAppIcons()
+	if err != nil {
+		return err
+	}
+	g.appIcon = icon
+	g.appIconSm = smallIcon
+
 	cursor, _, _ := procLoadCursorW.Call(0, idcArrow)
 	wndProc := syscall.NewCallback(guiWndProc)
 
-	if err := registerWindowClass(classMain, instance, icon, cursor, wndProc); err != nil {
+	if err := registerWindowClass(classMain, instance, icon, smallIcon, cursor, wndProc); err != nil {
+		g.cleanupIcons()
 		return err
 	}
-	if err := registerWindowClass(classCfg, instance, icon, cursor, wndProc); err != nil {
+	if err := registerWindowClass(classCfg, instance, icon, smallIcon, cursor, wndProc); err != nil {
+		g.cleanupIcons()
 		return err
 	}
 
-	mainHwnd, err := createTopLevelWindow(classMain, "VAXEE AutoSwitch", instance, 0, 0)
+	mainHwnd, err := createTopLevelWindow(classMain, appDisplayName, instance, 0, 0)
 	if err != nil {
+		g.cleanupIcons()
 		return err
 	}
 	g.mainHwnd = mainHwnd
 
-	cfgHwnd, err := createTopLevelWindow(classCfg, "VAXEE AutoSwitch", instance, 430, 405)
+	cfgHwnd, err := createTopLevelWindow(classCfg, appDisplayName, instance, 460, 545)
 	if err != nil {
+		g.cleanupIcons()
 		return err
 	}
 	g.cfgHwnd = cfgHwnd
@@ -261,13 +280,14 @@ func (g *guiState) init() error {
 	g.applyUIFont()
 	g.syncControls()
 
-	if err := g.addTrayIcon(icon); err != nil {
+	if err := g.addTrayIcon(smallIcon); err != nil {
+		g.cleanupIcons()
 		return err
 	}
 	return nil
 }
 
-func registerWindowClass(name string, instance uintptr, icon uintptr, cursor uintptr, wndProc uintptr) error {
+func registerWindowClass(name string, instance uintptr, icon uintptr, smallIcon uintptr, cursor uintptr, wndProc uintptr) error {
 	className := syscall.StringToUTF16Ptr(name)
 	wc := WNDCLASSEX{
 		CbSize:        uint32(unsafe.Sizeof(WNDCLASSEX{})),
@@ -277,7 +297,7 @@ func registerWindowClass(name string, instance uintptr, icon uintptr, cursor uin
 		HCursor:       cursor,
 		HbrBackground: uintptr(colorWindow + 1),
 		LpszClassName: className,
-		HIconSm:       icon,
+		HIconSm:       smallIcon,
 	}
 	r, _, err := procRegisterClassExW.Call(uintptr(unsafe.Pointer(&wc)))
 	if r == 0 {
@@ -329,7 +349,8 @@ func (g *guiState) buildControls() {
 	g.trajButtons[TrajSmoothSensitive] = createRadio(g, 18, 286, 180, 24, idTrajSmooth, "smooth_sensitive", true)
 	g.trajButtons[TrajStableControl] = createRadio(g, 210, 286, 170, 24, idTrajStable, "stable_control", false)
 
-	g.statusHW = createLabel(g, 18, 338, 390, 20, "")
+	createButton(g, 18, 330, 390, 30, idCaptureFG, "Append Foreground Process In 10s")
+	g.statusHW = createLabel(g, 18, 372, 390, 106, "")
 }
 
 func createLabel(g *guiState, x, y, w, h int32, text string) uintptr {
@@ -338,7 +359,7 @@ func createLabel(g *guiState, x, y, w, h int32, text string) uintptr {
 		uintptr(unsafe.Pointer(syscall.StringToUTF16Ptr("STATIC"))),
 		uintptr(unsafe.Pointer(syscall.StringToUTF16Ptr(text))),
 		uintptr(wsChild|wsVisible),
-		uintptr(x), uintptr(y), uintptr(w), uintptr(h),
+		uintptr(x), uintptr(y), uintptr(w+buttonExtraWidth), uintptr(h+buttonExtraHeight),
 		g.cfgHwnd,
 		0,
 		g.hInstance,
@@ -358,7 +379,23 @@ func createRadio(g *guiState, x, y, w, h int32, id int, text string, group bool)
 		uintptr(unsafe.Pointer(syscall.StringToUTF16Ptr("BUTTON"))),
 		uintptr(unsafe.Pointer(syscall.StringToUTF16Ptr(text))),
 		style,
-		uintptr(x), uintptr(y), uintptr(w), uintptr(h),
+		uintptr(x), uintptr(y), uintptr(w+buttonExtraWidth), uintptr(h+buttonExtraHeight),
+		g.cfgHwnd,
+		uintptr(id),
+		g.hInstance,
+		0,
+	)
+	g.controls = append(g.controls, hwnd)
+	return hwnd
+}
+
+func createButton(g *guiState, x, y, w, h int32, id int, text string) uintptr {
+	hwnd, _, _ := procCreateWindowExW.Call(
+		0,
+		uintptr(unsafe.Pointer(syscall.StringToUTF16Ptr("BUTTON"))),
+		uintptr(unsafe.Pointer(syscall.StringToUTF16Ptr(text))),
+		uintptr(wsChild|wsVisible|wsTabStop),
+		uintptr(x), uintptr(y), uintptr(w+buttonExtraWidth), uintptr(h+buttonExtraHeight),
 		g.cfgHwnd,
 		uintptr(id),
 		g.hInstance,
@@ -408,7 +445,7 @@ func (g *guiState) addTrayIcon(icon uintptr) error {
 		HIcon:            icon,
 		UVersion:         notifyIconVersion4,
 	}
-	copyUTF16(g.trayIcon.SzTip[:], "VAXEE AutoSwitch")
+	copyUTF16(g.trayIcon.SzTip[:], appDisplayName)
 
 	r, _, err := procShellNotifyIconW.Call(nimAdd, uintptr(unsafe.Pointer(&g.trayIcon)))
 	if r == 0 {
@@ -458,10 +495,10 @@ func guiWndProc(hwnd uintptr, msg uint32, wParam uintptr, lParam uintptr) uintpt
 			return 0
 		}
 	case wmAppTray:
-		switch uint32(lParam) {
-		case wmLButtonUp, wmLButtonDbl:
-			globalGUI.toggleConfigWindow()
-		case wmRButtonUp:
+		switch trayEvent(lParam) {
+		case wmLButtonDbl:
+			globalGUI.showConfigWindow()
+		case wmRButtonUp, wmContext:
 			globalGUI.showTrayMenu()
 		}
 		return 0
@@ -478,6 +515,10 @@ func (g *guiState) handleCommand(id int) {
 		g.syncControls()
 	case idProfileDefault:
 		g.currentProfile = ProfileDefault
+		g.syncControls()
+	case idCaptureFG:
+		g.statusNote = "Foreground process append queued for 10 seconds later."
+		g.scheduleForegroundAppend()
 		g.syncControls()
 	case idMenuOpen:
 		g.showConfigWindow()
@@ -529,8 +570,10 @@ func (g *guiState) applySelection(perf PerfMode, poll PollingRate, traj Trajecto
 	}
 
 	if err := g.app.UpdateProfile(g.currentProfile, perf, poll, traj); err != nil {
-		showMessageBox(g.cfgHwnd, "写入配置失败", err.Error(), mbOK|mbIconError)
+		showMessageBox(g.cfgHwnd, "Write config failed", err.Error(), mbOK|mbIconError)
+		return
 	}
+	g.statusNote = "Settings saved."
 	g.syncControls()
 }
 
@@ -563,20 +606,23 @@ func (g *guiState) syncControls() {
 		setChecked(hwnd, value == traj)
 	}
 
-	status := fmt.Sprintf("Current: %s | Clicking a button writes %s immediately", profileName(g.currentProfile), filepath.Base(cfg.ConfigPath))
+	statusNote := g.statusNote
+	if statusNote == "" {
+		statusNote = "Status: Ready."
+	}
+
+	status := fmt.Sprintf(
+		"Current: %s\r\nConfig: %s\r\n%s\r\n%s",
+		profileName(g.currentProfile),
+		filepath.Base(cfg.ConfigPath),
+		statusNote,
+		BatteryStatusTextVAXEE(),
+	)
 	setWindowText(g.statusHW, status)
 }
 
-func (g *guiState) toggleConfigWindow() {
-	if g.cfgHwnd == 0 {
-		return
-	}
-	visible, _, _ := procIsWindowVisible.Call(g.cfgHwnd)
-	if visible != 0 {
-		procShowWindow.Call(g.cfgHwnd, swHide)
-		return
-	}
-	g.showConfigWindow()
+func (g *guiState) scheduleForegroundAppend() {
+	g.app.ScheduleForegroundAppend(10 * time.Second)
 }
 
 func (g *guiState) showConfigWindow() {
@@ -591,19 +637,23 @@ func (g *guiState) showTrayMenu() {
 	if menu == 0 {
 		return
 	}
-	procAppendMenuW.Call(menu, mfString, idMenuOpen, uintptr(unsafe.Pointer(syscall.StringToUTF16Ptr("打开设置"))))
-	procAppendMenuW.Call(menu, mfString, idMenuExit, uintptr(unsafe.Pointer(syscall.StringToUTF16Ptr("退出"))))
+	defer procDestroyMenu.Call(menu)
+
+	procAppendMenuW.Call(menu, mfString, idMenuOpen, uintptr(unsafe.Pointer(syscall.StringToUTF16Ptr("Open Settings"))))
+	procAppendMenuW.Call(menu, mfString, idMenuExit, uintptr(unsafe.Pointer(syscall.StringToUTF16Ptr("Exit"))))
 
 	var pt POINT
 	procGetCursorPos.Call(uintptr(unsafe.Pointer(&pt)))
 	procSetForegroundWin.Call(g.mainHwnd)
 	procTrackPopupMenu.Call(menu, tpmLeftAlign|tpmBottomAlign|tpmRightButton, uintptr(pt.X), uintptr(pt.Y), 0, g.mainHwnd, 0)
+	procPostMessageW.Call(g.mainHwnd, wmNull, 0, 0)
 }
 
 func (g *guiState) close() {
 	if g.cancel != nil {
 		g.cancel()
 	}
+	g.app.CancelForegroundAppend()
 	if g.uiFont != 0 {
 		procDeleteObject.Call(g.uiFont)
 		g.uiFont = 0
@@ -616,6 +666,14 @@ func (g *guiState) close() {
 		procDestroyWindow.Call(g.mainHwnd)
 		g.mainHwnd = 0
 	}
+	g.cleanupIcons()
+}
+
+func (g *guiState) cleanupIcons() {
+	destroyIconHandle(g.appIconSm)
+	g.appIconSm = 0
+	destroyIconHandle(g.appIcon)
+	g.appIcon = 0
 }
 
 func showSimpleMessageBox(title string, message string) {
@@ -645,6 +703,10 @@ func setWindowText(hwnd uintptr, text string) {
 
 func controlID(wParam uintptr) int {
 	return int(uint16(wParam & 0xffff))
+}
+
+func trayEvent(lParam uintptr) uint32 {
+	return uint32(uint16(lParam & 0xffff))
 }
 
 func copyUTF16(dst []uint16, s string) {

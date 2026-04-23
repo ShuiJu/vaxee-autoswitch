@@ -75,7 +75,7 @@ func u32ptrFromI32(v int32) uintptr {
 
 func printBanner(cfgPath string) {
 	log.Printf("========================================")
-	log.Printf(" VAXEE AutoSwitch (Console)")
+	log.Printf(" %s (Console)", appDisplayName)
 	log.Printf(" Config: %s", cfgPath)
 	log.Printf("========================================")
 }
@@ -143,7 +143,7 @@ func tickOnce(cfg *Config, last *Applied) (switchMsg string, errStr string) {
 	if err != nil {
 		return "", ""
 	}
-	proc = strings.ToLower(filepath.Base(proc))
+	proc = normalizeProcessName(proc)
 
 	_, hit := cfg.WhitelistSet[proc]
 

@@ -94,6 +94,8 @@ const (
 	FILE_SHARE_WRITE = 0x00000002
 
 	OPEN_EXISTING = 3
+
+	vaxeeCommandInterval = 100 * time.Millisecond
 )
 
 // Unicode DetailData：cbSize x86=6 x64=8；但 DevicePath 偏移固定为 4（DWORD cbSize 之后）[6](https://blog.csdn.net/ShmilyCode/article/details/73105035)[7](https://www.cnblogs.com/ollie-lin/p/10188001.html)[8](https://maynoothuniversity-my.sharepoint.com/personal/shengwei_huang_2022_mumail_ie/Documents/Microsoft%20Copilot%20Chat%20Files/VAXEE%E6%8A%93%E5%8C%85%E7%AD%9B%E9%80%89%E7%BB%93%E6%9E%9C.txt)
@@ -462,7 +464,7 @@ func ApplyVaxeeSetting(path string, perf PerfMode, poll PollingRate) error {
 	if err := sendFeatureReport(path, buildReportSized(flen, 0x08, byte(perf))); err != nil {
 		return fmt.Errorf("perf feature report failed: %w", err)
 	}
-	time.Sleep(25 * time.Millisecond)
+	time.Sleep(vaxeeCommandInterval)
 
 	// 2) 回报率 cmd=0x07
 	yy, err := pollingToYY(poll)
@@ -472,6 +474,7 @@ func ApplyVaxeeSetting(path string, perf PerfMode, poll PollingRate) error {
 	if err := sendFeatureReport(path, buildReportSized(flen, 0x07, yy)); err != nil {
 		return fmt.Errorf("poll feature report failed: %w", err)
 	}
+	time.Sleep(vaxeeCommandInterval)
 	return nil
 }
 
@@ -585,6 +588,6 @@ func ApplyVaxeeTrajectory(path string, mode TrajectoryMode) error {
 	if err := sendFeatureReport(path, buildTrajectoryReportSized(flen, mode)); err != nil {
 		return fmt.Errorf("trajectory feature report failed: %w", err)
 	}
-	time.Sleep(25 * time.Millisecond)
+	time.Sleep(vaxeeCommandInterval)
 	return nil
 }
