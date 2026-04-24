@@ -23,9 +23,10 @@ type AutoSwitchApp struct {
 	cfg     *Config
 	modTime time.Time
 
-	lastDevErr   string
-	lastDevCount int
-	devErrMu     sync.RWMutex
+	lastDevErr       string
+	lastDevCount     int
+	lastLogicalCount int
+	devErrMu         sync.RWMutex
 
 	wakeCh         chan struct{}
 	captureRequest uint64
@@ -55,11 +56,12 @@ func (a *AutoSwitchApp) CurrentConfig() *Config {
 	return cloneConfig(a.cfg)
 }
 
-func (a *AutoSwitchApp) SetDevState(err string, count int) {
+func (a *AutoSwitchApp) SetDevState(err string, count int, logicalCount int) {
 	a.devErrMu.Lock()
 	defer a.devErrMu.Unlock()
 	a.lastDevErr = err
 	a.lastDevCount = count
+	a.lastLogicalCount = logicalCount
 }
 
 func (a *AutoSwitchApp) LastDevError() string {
@@ -74,6 +76,12 @@ func (a *AutoSwitchApp) DevCount() int {
 	return a.lastDevCount
 }
 
+func (a *AutoSwitchApp) LogicalDevCount() int {
+	a.devErrMu.RLock()
+	defer a.devErrMu.RUnlock()
+	return a.lastLogicalCount
+}
+
 func (a *AutoSwitchApp) Run(ctx context.Context) error {
 	setLowPriorityDefaults(true, true)
 
@@ -84,12 +92,12 @@ func (a *AutoSwitchApp) Run(ctx context.Context) error {
 		a.reloadConfigIfChanged()
 		cfg := a.CurrentConfig()
 
-		switchMsg, errStr, devCount := tickOnce(cfg, &last)
+		switchMsg, errStr, devCount, logicalCount := tickOnce(cfg, &last)
 		if switchMsg != "" {
 			log.Print(switchMsg)
 		}
 		handleError(&lastErr, errStr)
-		a.SetDevState(errStr, devCount)
+		a.SetDevState(errStr, devCount, logicalCount)
 
 		timer := time.NewTimer(cfg.Interval)
 		select {

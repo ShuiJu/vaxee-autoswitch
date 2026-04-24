@@ -4,6 +4,7 @@ package main
 
 import (
 	"fmt"
+	"regexp"
 	"strings"
 	"syscall"
 	"time"
@@ -29,6 +30,18 @@ type SP_DEVICE_INTERFACE_DATA struct {
 	InterfaceClassGuid GUID
 	Flags              uint32
 	Reserved           uintptr
+}
+
+type SP_DEVINFO_DATA struct {
+	CbSize    uint32
+	ClassGuid GUID
+	DevInst   uint32
+	Reserved  uintptr
+}
+
+type DEVPROPKEY struct {
+	Fmtid GUID
+	Pid   uint32
 }
 
 // HIDP_CAPS 结构：包含 FeatureReportByteLength（包含 ReportID 字节）[2](https://learn.microsoft.com/zh-tw/windows-hardware/drivers/ddi/hidpi/ns-hidpi-_hidp_caps)
@@ -62,10 +75,14 @@ var (
 	hidDLLHID   = syscall.NewLazyDLL("hid.dll")
 	k32HID      = syscall.NewLazyDLL("kernel32.dll")
 
+	reVaxeeLogicalCollection = regexp.MustCompile(`&col\d+`)
+	reVaxeeInterfaceNumber   = regexp.MustCompile(`&mi_\d+`)
+
 	procSetupDiGetClassDevsW_HID             = setupapiHID.NewProc("SetupDiGetClassDevsW")
 	procSetupDiEnumDeviceInterfaces_HID      = setupapiHID.NewProc("SetupDiEnumDeviceInterfaces")
 	procSetupDiGetDeviceInterfaceDetailW_HID = setupapiHID.NewProc("SetupDiGetDeviceInterfaceDetailW")
 	procSetupDiDestroyDeviceInfoList_HID     = setupapiHID.NewProc("SetupDiDestroyDeviceInfoList")
+	procSetupDiGetDevicePropertyW_HID        = setupapiHID.NewProc("SetupDiGetDevicePropertyW")
 
 	procHidDGetHidGuid_HID            = hidDLLHID.NewProc("HidD_GetHidGuid")
 	procHidDGetAttributes_HID         = hidDLLHID.NewProc("HidD_GetAttributes")
@@ -82,6 +99,16 @@ var (
 	procCloseHandle_HID  = k32HID.NewProc("CloseHandle")
 	procGetLastError_HID = k32HID.NewProc("GetLastError")
 )
+
+var devPropKeyDeviceContainerID = DEVPROPKEY{
+	Fmtid: GUID{
+		Data1: 0x8c7ed206,
+		Data2: 0x3f8a,
+		Data3: 0x4827,
+		Data4: [8]byte{0xb3, 0xab, 0xae, 0x9e, 0x1f, 0xae, 0xfc, 0x6c},
+	},
+	Pid: 2,
+}
 
 const (
 	DIGCF_PRESENT         = 0x00000002
@@ -114,6 +141,7 @@ type VaxeeDeviceInfo struct {
 	PID          uint16
 	Manufacturer string
 	Product      string
+	ContainerID  string
 	UsagePage    uint16
 	Usage        uint16
 	FeatureLen   uint16
@@ -291,7 +319,38 @@ func queryCaps(h syscall.Handle) (HIDP_CAPS, error) {
 	return caps, nil
 }
 
-func queryDeviceInfo(path string) (VaxeeDeviceInfo, bool) {
+func guidToString(g GUID) string {
+	return fmt.Sprintf("%08x-%04x-%04x-%02x%02x-%02x%02x%02x%02x%02x%02x",
+		g.Data1, g.Data2, g.Data3,
+		g.Data4[0], g.Data4[1],
+		g.Data4[2], g.Data4[3], g.Data4[4], g.Data4[5], g.Data4[6], g.Data4[7],
+	)
+}
+
+func queryContainerID(hDevInfo uintptr, devInfoData *SP_DEVINFO_DATA) string {
+	if hDevInfo == 0 || devInfoData == nil {
+		return ""
+	}
+	var propType uint32
+	var required uint32
+	var containerGUID GUID
+	r1, _, _ := procSetupDiGetDevicePropertyW_HID.Call(
+		hDevInfo,
+		uintptr(unsafe.Pointer(devInfoData)),
+		uintptr(unsafe.Pointer(&devPropKeyDeviceContainerID)),
+		uintptr(unsafe.Pointer(&propType)),
+		uintptr(unsafe.Pointer(&containerGUID)),
+		unsafe.Sizeof(containerGUID),
+		uintptr(unsafe.Pointer(&required)),
+		0,
+	)
+	if r1 == 0 {
+		return ""
+	}
+	return guidToString(containerGUID)
+}
+
+func queryDeviceInfo(hDevInfo uintptr, devInfoData *SP_DEVINFO_DATA, path string) (VaxeeDeviceInfo, bool) {
 	h, err := openHIDPathForQuery(path)
 	if err != nil {
 		return VaxeeDeviceInfo{}, false
@@ -313,13 +372,13 @@ func queryDeviceInfo(path string) (VaxeeDeviceInfo, bool) {
 	if capErr != nil {
 		return VaxeeDeviceInfo{
 			Path: path, VID: attr.VendorID, PID: attr.ProductID,
-			Manufacturer: manu, Product: prod,
+			Manufacturer: manu, Product: prod, ContainerID: queryContainerID(hDevInfo, devInfoData),
 		}, true
 	}
 
 	return VaxeeDeviceInfo{
 		Path: path, VID: attr.VendorID, PID: attr.ProductID,
-		Manufacturer: manu, Product: prod,
+		Manufacturer: manu, Product: prod, ContainerID: queryContainerID(hDevInfo, devInfoData),
 		UsagePage: caps.UsagePage, Usage: caps.Usage,
 		FeatureLen: caps.FeatureReportByteLength,
 	}, true
@@ -341,6 +400,8 @@ func EnumerateVaxeeDevices() ([]VaxeeDeviceInfo, error) {
 	for idx := 0; ; idx++ {
 		var ifData SP_DEVICE_INTERFACE_DATA
 		ifData.CbSize = uint32(unsafe.Sizeof(ifData))
+		var devInfoData SP_DEVINFO_DATA
+		devInfoData.CbSize = uint32(unsafe.Sizeof(devInfoData))
 
 		r1, _, eEnum := procSetupDiEnumDeviceInterfaces_HID.Call(
 			hDevInfo, 0,
@@ -376,7 +437,7 @@ func EnumerateVaxeeDevices() ([]VaxeeDeviceInfo, error) {
 			uintptr(unsafe.Pointer(&buf[0])),
 			uintptr(required),
 			uintptr(unsafe.Pointer(&required)),
-			0,
+			uintptr(unsafe.Pointer(&devInfoData)),
 		)
 		if r2 == 0 {
 			continue
@@ -388,7 +449,7 @@ func EnumerateVaxeeDevices() ([]VaxeeDeviceInfo, error) {
 			continue
 		}
 
-		info, ok := queryDeviceInfo(path)
+		info, ok := queryDeviceInfo(hDevInfo, &devInfoData, path)
 		if !ok {
 			continue
 		}
@@ -456,6 +517,32 @@ func FindAllVaxeeDevices() []VaxeeDeviceInfo {
 	return devs
 }
 
+func vaxeePhysicalKey(path string) string {
+	key := strings.ToLower(strings.TrimSpace(path))
+	key = strings.TrimSuffix(key, `\kbd`)
+	key = reVaxeeInterfaceNumber.ReplaceAllString(key, "")
+	key = reVaxeeLogicalCollection.ReplaceAllString(key, "")
+	return key
+}
+
+func CountUniqueVaxeeDevices(devs []VaxeeDeviceInfo) int {
+	if len(devs) == 0 {
+		return 0
+	}
+	seen := make(map[string]struct{}, len(devs))
+	for _, dev := range devs {
+		key := strings.ToLower(strings.TrimSpace(dev.ContainerID))
+		if key == "" {
+			key = vaxeePhysicalKey(dev.Path)
+		}
+		if key == "" {
+			key = fmt.Sprintf("%04x:%04x:%s:%s", dev.VID, dev.PID, strings.ToLower(dev.Manufacturer), strings.ToLower(dev.Product))
+		}
+		seen[key] = struct{}{}
+	}
+	return len(seen)
+}
+
 // 应用设置：按 caps.FeatureLen 发送，避免长度不匹配[1](https://learn.microsoft.com/en-us/windows-hardware/drivers/ddi/hidsdi/nf-hidsdi-hidd_setfeature)[2](https://learn.microsoft.com/zh-tw/windows-hardware/drivers/ddi/hidpi/ns-hidpi-_hidp_caps)
 func ApplyVaxeeSetting(path string, perf PerfMode, poll PollingRate) error {
 	// 重新查一次当前控制通道 caps（保证 feature length 正确）
@@ -504,6 +591,8 @@ func EnumerateAllHidDevices() ([]VaxeeDeviceInfo, error) {
 	for idx := 0; ; idx++ {
 		var ifData SP_DEVICE_INTERFACE_DATA
 		ifData.CbSize = uint32(unsafe.Sizeof(ifData))
+		var devInfoData SP_DEVINFO_DATA
+		devInfoData.CbSize = uint32(unsafe.Sizeof(devInfoData))
 
 		r1, _, eEnum := procSetupDiEnumDeviceInterfaces_HID.Call(
 			hDevInfo, 0,
@@ -540,7 +629,7 @@ func EnumerateAllHidDevices() ([]VaxeeDeviceInfo, error) {
 			uintptr(unsafe.Pointer(&buf[0])),
 			uintptr(required),
 			uintptr(unsafe.Pointer(&required)),
-			0,
+			uintptr(unsafe.Pointer(&devInfoData)),
 		)
 		if r2 == 0 {
 			continue
@@ -552,7 +641,7 @@ func EnumerateAllHidDevices() ([]VaxeeDeviceInfo, error) {
 			continue
 		}
 
-		info, ok := queryDeviceInfo(path)
+		info, ok := queryDeviceInfo(hDevInfo, &devInfoData, path)
 		if !ok {
 			continue
 		}

@@ -262,7 +262,7 @@ func main() {
 	for {
 		reloadConfigIfChanged(cfgPath, &cfg, &modTime)
 
-		switchMsg, errStr, _ := tickOnce(cfg, &last)
+		switchMsg, errStr, _, _ := tickOnce(cfg, &last)
 		if switchMsg != "" {
 			log.Print(switchMsg)
 		}

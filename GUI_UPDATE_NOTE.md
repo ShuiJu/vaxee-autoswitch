@@ -1,6 +1,6 @@
 # GUI Update Note
 
-Version: `V0.4`
+Version: `V0.4.1`
 
 这份 note 用于把当前项目里的 CLI 工具改造成轻量级 Windows 托盘 GUI，并把同样的思路复用到别的项目。
 

@@ -138,10 +138,10 @@ func setThreadPowerThrottling(hThread uintptr) {
 	)
 }
 
-func tickOnce(cfg *Config, last *Applied) (switchMsg string, errStr string, devCount int) {
+func tickOnce(cfg *Config, last *Applied) (switchMsg string, errStr string, devCount int, logicalCount int) {
 	proc, err := ForegroundProcessName()
 	if err != nil {
-		return "", "", 0
+		return "", "", 0, 0
 	}
 	proc = normalizeProcessName(proc)
 
@@ -156,22 +156,24 @@ func tickOnce(cfg *Config, last *Applied) (switchMsg string, errStr string, devC
 		wantTraj = cfg.HitTraj
 	}
 
-	devCount = len(FindAllVaxeeDevices())
+	devs := FindAllVaxeeDevices()
+	logicalCount = len(devs)
+	devCount = CountUniqueVaxeeDevices(devs)
 	if last.ok && last.perf == wantPerf && last.poll == wantPoll && last.traj == wantTraj {
-		return "", "", devCount
+		return "", "", devCount, logicalCount
 	}
 
 	dev, findErr := FindOneVaxeeDevice()
 	if findErr != nil {
-		return "", "未找到可用 VAXEE 设备: " + findErr.Error(), devCount
+		return "", "未找到可用 VAXEE 设备: " + findErr.Error(), devCount, logicalCount
 	}
 
 	if err := ApplyVaxeeSetting(dev.Path, wantPerf, wantPoll); err != nil {
-		return "", "应用设置失败: " + err.Error(), devCount
+		return "", "应用设置失败: " + err.Error(), devCount, logicalCount
 	}
 
 	if err := ApplyVaxeeTrajectory(dev.Path, wantTraj); err != nil {
-		return "", "应用轨迹设置失败: " + err.Error(), devCount
+		return "", "应用轨迹设置失败: " + err.Error(), devCount, logicalCount
 	}
 
 	*last = Applied{perf: wantPerf, poll: wantPoll, traj: wantTraj, ok: true}
@@ -179,10 +181,10 @@ func tickOnce(cfg *Config, last *Applied) (switchMsg string, errStr string, devC
 
 	if hit {
 		return fmt.Sprintf("[SWITCH] 命中白名单(%s) -> %s + %dHz + traj=%s",
-			proc, perfName(wantPerf), wantPoll, trajName(wantTraj)), "", devCount
+			proc, perfName(wantPerf), wantPoll, trajName(wantTraj)), "", devCount, logicalCount
 	}
 	return fmt.Sprintf("[SWITCH] 未命中白名单(%s) -> %s + %dHz + traj=%s",
-		proc, perfName(wantPerf), wantPoll, trajName(wantTraj)), "", devCount
+		proc, perfName(wantPerf), wantPoll, trajName(wantTraj)), "", devCount, logicalCount
 }
 
 func enumerateDevices() {

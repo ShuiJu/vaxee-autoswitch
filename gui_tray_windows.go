@@ -250,7 +250,7 @@ const (
 	dwmwaUseImmersiveDarkMode = 20
 
 	winW = 800
-	winH = 800
+	winH = 780
 )
 
 func runGUIApp() error {
@@ -388,10 +388,10 @@ func createTopLevelWindow(className string, title string, instance uintptr, widt
 func (g *guiState) buildControls() {
 	const (
 		pad    = int32(30)
-		secH   = int32(28)
+		secH   = int32(36)
 		rowH   = int32(32)
-		secGap = int32(16)
-		blkGap = int32(24)
+		secGap = int32(10)
+		blkGap = int32(16)
 		btnH   = int32(40)
 	)
 
@@ -409,43 +409,43 @@ func (g *guiState) buildControls() {
 	g.hdrStatusHW = createLabel(g, pad, y, winW-pad*2, 36, "")
 	y += 54
 
-	createLabel(g, pad, y, winW-pad*2, secH, "Profile")
+	createLabel(g, pad, y, winW-pad*2, secH, "选择要修改的配置文件")
 	y += secH + secGap
-	g.profileButtons[ProfileHit] = createRadio(g, leftColX, y, twoColW, rowH, idProfileHit, "Hit Profile", true)
-	g.profileButtons[ProfileDefault] = createRadio(g, rightColX, y, twoColW, rowH, idProfileDefault, "Miss (Default)", false)
+	g.profileButtons[ProfileHit] = createRadio(g, leftColX, y, twoColW, rowH, idProfileHit, "高性能配置", true)
+	g.profileButtons[ProfileDefault] = createRadio(g, rightColX, y, twoColW, rowH, idProfileDefault, "省电用配置（默认配置）", false)
 	y += rowH + blkGap
-	g.separatorYs = append(g.separatorYs, y-4)
+	g.separatorYs = append(g.separatorYs, y-(blkGap/2))
 
-	createLabel(g, pad, y, winW-pad*2, secH, "Performance Mode")
+	createLabel(g, pad, y, winW-pad*2, secH, "性能模式")
 	y += secH + secGap
-	g.perfBaseButtons[0] = createRadio(g, leftColX, y, twoColW, rowH, idPerfCompetitive, "competitive", true)
-	g.perfBaseButtons[1] = createRadio(g, rightColX, y, twoColW, rowH, idPerfStandard, "standard", false)
+	g.perfBaseButtons[0] = createRadio(g, leftColX, y, twoColW, rowH, idPerfCompetitive, "竞技模式", true)
+	g.perfBaseButtons[1] = createRadio(g, rightColX, y, twoColW, rowH, idPerfStandard, "标准模式", false)
 	y += rowH + blkGap
-	g.separatorYs = append(g.separatorYs, y-4)
+	g.separatorYs = append(g.separatorYs, y-(blkGap/2))
 
 	createLabel(g, pad, y, winW-pad*2, secH, "Motion Sync")
 	y += secH + secGap
-	g.motionSyncButtons[0] = createRadio(g, leftColX, y, twoColW, rowH, idMSOff, "off", true)
-	g.motionSyncButtons[1] = createRadio(g, rightColX, y, twoColW, rowH, idMSOn, "on", false)
+	g.motionSyncButtons[0] = createRadio(g, leftColX, y, twoColW, rowH, idMSOff, "关闭", true)
+	g.motionSyncButtons[1] = createRadio(g, rightColX, y, twoColW, rowH, idMSOn, "开启", false)
 	y += rowH + blkGap
-	g.separatorYs = append(g.separatorYs, y-4)
+	g.separatorYs = append(g.separatorYs, y-(blkGap/2))
 
-	createLabel(g, pad, y, winW-pad*2, secH, "Polling Rate")
+	createLabel(g, pad, y, winW-pad*2, secH, "回报率设置")
 	y += secH + secGap
 	g.pollButtons[Poll1000] = createRadio(g, pad, y, threeColW, rowH, idPoll1000, "1000 Hz", true)
 	g.pollButtons[Poll2000] = createRadio(g, poll2X, y, threeColW, rowH, idPoll2000, "2000 Hz", false)
 	g.pollButtons[Poll4000] = createRadio(g, poll3X, y, threeColW, rowH, idPoll4000, "4000 Hz", false)
 	y += rowH + blkGap
-	g.separatorYs = append(g.separatorYs, y-4)
+	g.separatorYs = append(g.separatorYs, y-(blkGap/2))
 
-	createLabel(g, pad, y, winW-pad*2, secH, "Trajectory Mode")
+	createLabel(g, pad, y, winW-pad*2, secH, "追踪轨迹设置")
 	y += secH + secGap
-	g.trajButtons[TrajSmoothSensitive] = createRadio(g, leftColX, y, twoColW, rowH, idTrajSmooth, "smooth_sensitive", true)
-	g.trajButtons[TrajStableControl] = createRadio(g, rightColX, y, twoColW, rowH, idTrajStable, "stable_control", false)
+	g.trajButtons[TrajSmoothSensitive] = createRadio(g, leftColX, y, twoColW, rowH, idTrajSmooth, "顺滑灵敏", true)
+	g.trajButtons[TrajStableControl] = createRadio(g, rightColX, y, twoColW, rowH, idTrajStable, "稳定易控", false)
 	y += rowH + blkGap
-	g.separatorYs = append(g.separatorYs, y-4)
+	g.separatorYs = append(g.separatorYs, y-(blkGap/2))
 
-	createButton(g, pad, y, winW-pad*2, btnH, idCaptureFG, "Append Foreground Process In 10s")
+	createButton(g, pad, y, winW-pad*2, btnH, idCaptureFG, "十秒后登记前台窗口为高性能应用")
 	y += btnH + 20
 
 	statusLineH := int32(24)
@@ -821,6 +821,7 @@ func (g *guiState) syncControls() {
 	}
 
 	devCount := g.app.DevCount()
+	logicalCount := g.app.LogicalDevCount()
 	devErr := g.app.LastDevError()
 	switch {
 	case devErr != "":
@@ -837,6 +838,9 @@ func (g *guiState) syncControls() {
 	}
 
 	deviceLine := fmt.Sprintf("Device: %d connected  |  settings sync to detected devices", devCount)
+	if logicalCount > devCount && devCount > 0 {
+		deviceLine = fmt.Sprintf("Device: %d connected  |  %d logical HID interfaces detected", devCount, logicalCount)
+	}
 	if devErr != "" {
 		deviceLine = fmt.Sprintf("Device: %s", devErr)
 	}
