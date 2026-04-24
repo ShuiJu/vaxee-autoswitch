@@ -448,6 +448,14 @@ func FindOneVaxeeDevice() (VaxeeDeviceInfo, error) {
 	return SelectVaxeeControlPath()
 }
 
+func FindAllVaxeeDevices() []VaxeeDeviceInfo {
+	devs, err := EnumerateVaxeeDevices()
+	if err != nil {
+		return nil
+	}
+	return devs
+}
+
 // 应用设置：按 caps.FeatureLen 发送，避免长度不匹配[1](https://learn.microsoft.com/en-us/windows-hardware/drivers/ddi/hidsdi/nf-hidsdi-hidd_setfeature)[2](https://learn.microsoft.com/zh-tw/windows-hardware/drivers/ddi/hidpi/ns-hidpi-_hidp_caps)
 func ApplyVaxeeSetting(path string, perf PerfMode, poll PollingRate) error {
 	// 重新查一次当前控制通道 caps（保证 feature length 正确）

@@ -138,10 +138,10 @@ func setThreadPowerThrottling(hThread uintptr) {
 	)
 }
 
-func tickOnce(cfg *Config, last *Applied) (switchMsg string, errStr string) {
+func tickOnce(cfg *Config, last *Applied) (switchMsg string, errStr string, devCount int) {
 	proc, err := ForegroundProcessName()
 	if err != nil {
-		return "", ""
+		return "", "", 0
 	}
 	proc = normalizeProcessName(proc)
 
@@ -156,21 +156,22 @@ func tickOnce(cfg *Config, last *Applied) (switchMsg string, errStr string) {
 		wantTraj = cfg.HitTraj
 	}
 
+	devCount = len(FindAllVaxeeDevices())
 	if last.ok && last.perf == wantPerf && last.poll == wantPoll && last.traj == wantTraj {
-		return "", ""
+		return "", "", devCount
 	}
 
 	dev, findErr := FindOneVaxeeDevice()
 	if findErr != nil {
-		return "", "未找到可用 VAXEE 设备: " + findErr.Error()
+		return "", "未找到可用 VAXEE 设备: " + findErr.Error(), devCount
 	}
 
 	if err := ApplyVaxeeSetting(dev.Path, wantPerf, wantPoll); err != nil {
-		return "", "应用设置失败: " + err.Error()
+		return "", "应用设置失败: " + err.Error(), devCount
 	}
 
 	if err := ApplyVaxeeTrajectory(dev.Path, wantTraj); err != nil {
-		return "", "应用轨迹设置失败: " + err.Error()
+		return "", "应用轨迹设置失败: " + err.Error(), devCount
 	}
 
 	*last = Applied{perf: wantPerf, poll: wantPoll, traj: wantTraj, ok: true}
@@ -178,10 +179,10 @@ func tickOnce(cfg *Config, last *Applied) (switchMsg string, errStr string) {
 
 	if hit {
 		return fmt.Sprintf("[SWITCH] 命中白名单(%s) -> %s + %dHz + traj=%s",
-			proc, perfName(wantPerf), wantPoll, trajName(wantTraj)), ""
+			proc, perfName(wantPerf), wantPoll, trajName(wantTraj)), "", devCount
 	}
 	return fmt.Sprintf("[SWITCH] 未命中白名单(%s) -> %s + %dHz + traj=%s",
-		proc, perfName(wantPerf), wantPoll, trajName(wantTraj)), ""
+		proc, perfName(wantPerf), wantPoll, trajName(wantTraj)), "", devCount
 }
 
 func enumerateDevices() {

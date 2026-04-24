@@ -12,6 +12,28 @@ import (
 	"unsafe"
 )
 
+// Win32 COLORREF = 0x00BBGGRR
+const (
+	clrBg        = 0x00252525
+	clrAccent    = 0x003565FF
+	clrText      = 0x00F0F0F0
+	clrSeparator = 0x00444444
+)
+
+type RECT struct {
+	Left, Top, Right, Bottom int32
+}
+
+type PAINTSTRUCT struct {
+	Hdc         uintptr
+	FErase      int32
+	_pad1       int32
+	RcPaint     RECT
+	FRestore    int32
+	FIncUpdate  int32
+	RgbReserved [32]byte
+}
+
 type guiState struct {
 	app    *AutoSwitchApp
 	cancel context.CancelFunc
@@ -19,19 +41,27 @@ type guiState struct {
 	hInstance uintptr
 	mainHwnd  uintptr
 	cfgHwnd   uintptr
-	statusHW  uintptr
-	uiFont    uintptr
+
+	hdrStatusHW uintptr
+	statusLines [4]uintptr
+
+	uiFont     uintptr
+	statusFont uintptr
+	hbrBg      uintptr
+
 	appIcon   uintptr
 	appIconSm uintptr
 
 	currentProfile ProfileKind
 	statusNote     string
 
-	profileButtons map[ProfileKind]uintptr
-	perfButtons    map[PerfMode]uintptr
-	pollButtons    map[PollingRate]uintptr
-	trajButtons    map[TrajectoryMode]uintptr
-	controls       []uintptr
+	profileButtons    map[ProfileKind]uintptr
+	perfBaseButtons   map[int]uintptr
+	motionSyncButtons map[int]uintptr
+	pollButtons       map[PollingRate]uintptr
+	trajButtons       map[TrajectoryMode]uintptr
+	controls          []uintptr
+	separatorYs       []int32
 
 	trayIcon NOTIFYICONDATA
 }
@@ -89,13 +119,13 @@ var (
 	kernel32GUI = syscall.NewLazyDLL("kernel32.dll")
 	shell32GUI  = syscall.NewLazyDLL("shell32.dll")
 	gdi32GUI    = syscall.NewLazyDLL("gdi32.dll")
+	dwmapiGUI   = syscall.NewLazyDLL("dwmapi.dll")
 
 	procRegisterClassExW = user32GUI.NewProc("RegisterClassExW")
 	procCreateWindowExW  = user32GUI.NewProc("CreateWindowExW")
 	procDefWindowProcW   = user32GUI.NewProc("DefWindowProcW")
 	procDestroyWindow    = user32GUI.NewProc("DestroyWindow")
 	procShowWindow       = user32GUI.NewProc("ShowWindow")
-	procIsWindowVisible  = user32GUI.NewProc("IsWindowVisible")
 	procUpdateWindow     = user32GUI.NewProc("UpdateWindow")
 	procGetMessageW      = user32GUI.NewProc("GetMessageW")
 	procTranslateMessage = user32GUI.NewProc("TranslateMessage")
@@ -112,13 +142,26 @@ var (
 	procTrackPopupMenu   = user32GUI.NewProc("TrackPopupMenu")
 	procDestroyMenu      = user32GUI.NewProc("DestroyMenu")
 	procMessageBoxW      = user32GUI.NewProc("MessageBoxW")
+	procGetClientRect    = user32GUI.NewProc("GetClientRect")
+	procFillRect         = user32GUI.NewProc("FillRect")
+	procBeginPaint       = user32GUI.NewProc("BeginPaint")
+	procEndPaint         = user32GUI.NewProc("EndPaint")
 
 	procGetModuleHandleW = kernel32GUI.NewProc("GetModuleHandleW")
 
-	procCreateFontW  = gdi32GUI.NewProc("CreateFontW")
-	procDeleteObject = gdi32GUI.NewProc("DeleteObject")
+	procCreateFontW      = gdi32GUI.NewProc("CreateFontW")
+	procDeleteObject     = gdi32GUI.NewProc("DeleteObject")
+	procCreateSolidBrush = gdi32GUI.NewProc("CreateSolidBrush")
+	procCreatePen        = gdi32GUI.NewProc("CreatePen")
+	procSelectObject     = gdi32GUI.NewProc("SelectObject")
+	procMoveToEx         = gdi32GUI.NewProc("MoveToEx")
+	procLineTo           = gdi32GUI.NewProc("LineTo")
+	procSetBkMode        = gdi32GUI.NewProc("SetBkMode")
+	procSetTextColor     = gdi32GUI.NewProc("SetTextColor")
+	procSetBkColor       = gdi32GUI.NewProc("SetBkColor")
 
-	procShellNotifyIconW = shell32GUI.NewProc("Shell_NotifyIconW")
+	procShellNotifyIconW      = shell32GUI.NewProc("Shell_NotifyIconW")
+	procDwmSetWindowAttribute = dwmapiGUI.NewProc("DwmSetWindowAttribute")
 )
 
 var globalGUI *guiState
@@ -129,11 +172,14 @@ const (
 
 	wmAppTray = 0x8000 + 1
 
-	wmNull    = 0x0000
-	wmCommand = 0x0111
-	wmClose   = 0x0010
-	wmContext = 0x007B
-	wmDestroy = 0x0002
+	wmNull           = 0x0000
+	wmCommand        = 0x0111
+	wmClose          = 0x0010
+	wmDestroy        = 0x0002
+	wmPaint          = 0x000F
+	wmEraseBkgnd     = 0x0014
+	wmCtlColorStatic = 0x0138
+	wmCtlColorBtn    = 0x0135
 
 	wmLButtonDbl = 0x0203
 	wmRButtonUp  = 0x0205
@@ -153,7 +199,6 @@ const (
 	swShow = 5
 
 	cwUseDefault = 0x80000000
-	colorWindow  = 5
 
 	mbOK        = 0x00000000
 	mbIconError = 0x00000010
@@ -184,10 +229,10 @@ const (
 	idProfileHit     = 1001
 	idProfileDefault = 1002
 
-	idPerfStandardMSOff  = 1101
-	idPerfCompetitiveOff = 1102
-	idPerfCompetitiveOn  = 1103
-	idPerfStandardMSOn   = 1104
+	idPerfCompetitive = 1101
+	idPerfStandard    = 1102
+	idMSOff           = 1103
+	idMSOn            = 1104
 
 	idPoll1000 = 1201
 	idPoll2000 = 1202
@@ -200,8 +245,12 @@ const (
 	idMenuOpen = 9001
 	idMenuExit = 9002
 
-	buttonExtraWidth  = 10
-	buttonExtraHeight = 5
+	transparent               = 1
+	psSolid                   = 0
+	dwmwaUseImmersiveDarkMode = 20
+
+	winW = 800
+	winH = 800
 )
 
 func runGUIApp() error {
@@ -218,13 +267,14 @@ func runGUIApp() error {
 	go app.Run(ctx)
 
 	gui := &guiState{
-		app:            app,
-		cancel:         cancel,
-		currentProfile: ProfileHit,
-		profileButtons: map[ProfileKind]uintptr{},
-		perfButtons:    map[PerfMode]uintptr{},
-		pollButtons:    map[PollingRate]uintptr{},
-		trajButtons:    map[TrajectoryMode]uintptr{},
+		app:               app,
+		cancel:            cancel,
+		currentProfile:    ProfileHit,
+		profileButtons:    map[ProfileKind]uintptr{},
+		perfBaseButtons:   map[int]uintptr{},
+		motionSyncButtons: map[int]uintptr{},
+		pollButtons:       map[PollingRate]uintptr{},
+		trajButtons:       map[TrajectoryMode]uintptr{},
 	}
 	globalGUI = gui
 
@@ -253,41 +303,48 @@ func (g *guiState) init() error {
 	cursor, _, _ := procLoadCursorW.Call(0, idcArrow)
 	wndProc := syscall.NewCallback(guiWndProc)
 
-	if err := registerWindowClass(classMain, instance, icon, smallIcon, cursor, wndProc); err != nil {
-		g.cleanupIcons()
+	g.hbrBg, _, _ = procCreateSolidBrush.Call(clrBg)
+
+	if err := registerWindowClass(classMain, instance, icon, smallIcon, cursor, wndProc, g.hbrBg); err != nil {
+		g.cleanupResources()
 		return err
 	}
-	if err := registerWindowClass(classCfg, instance, icon, smallIcon, cursor, wndProc); err != nil {
-		g.cleanupIcons()
+	if err := registerWindowClass(classCfg, instance, icon, smallIcon, cursor, wndProc, g.hbrBg); err != nil {
+		g.cleanupResources()
 		return err
 	}
 
 	mainHwnd, err := createTopLevelWindow(classMain, appDisplayName, instance, 0, 0)
 	if err != nil {
-		g.cleanupIcons()
+		g.cleanupResources()
 		return err
 	}
 	g.mainHwnd = mainHwnd
 
-	cfgHwnd, err := createTopLevelWindow(classCfg, appDisplayName, instance, 460, 545)
+	cfgHwnd, err := createTopLevelWindow(classCfg, appDisplayName, instance, winW, winH)
 	if err != nil {
-		g.cleanupIcons()
+		g.cleanupResources()
 		return err
 	}
 	g.cfgHwnd = cfgHwnd
-	g.uiFont = createUIFont()
+
+	g.uiFont = createUIFont(24, false)
+	g.statusFont = createUIFont(18, false)
 	g.buildControls()
-	g.applyUIFont()
+	g.applyFonts()
 	g.syncControls()
 
+	useDark := uintptr(1)
+	procDwmSetWindowAttribute.Call(cfgHwnd, dwmwaUseImmersiveDarkMode, uintptr(unsafe.Pointer(&useDark)), unsafe.Sizeof(useDark))
+
 	if err := g.addTrayIcon(smallIcon); err != nil {
-		g.cleanupIcons()
+		g.cleanupResources()
 		return err
 	}
 	return nil
 }
 
-func registerWindowClass(name string, instance uintptr, icon uintptr, smallIcon uintptr, cursor uintptr, wndProc uintptr) error {
+func registerWindowClass(name string, instance uintptr, icon uintptr, smallIcon uintptr, cursor uintptr, wndProc uintptr, bgBrush uintptr) error {
 	className := syscall.StringToUTF16Ptr(name)
 	wc := WNDCLASSEX{
 		CbSize:        uint32(unsafe.Sizeof(WNDCLASSEX{})),
@@ -295,7 +352,7 @@ func registerWindowClass(name string, instance uintptr, icon uintptr, smallIcon 
 		HInstance:     instance,
 		HIcon:         icon,
 		HCursor:       cursor,
-		HbrBackground: uintptr(colorWindow + 1),
+		HbrBackground: bgBrush,
 		LpszClassName: className,
 		HIconSm:       smallIcon,
 	}
@@ -329,28 +386,74 @@ func createTopLevelWindow(className string, title string, instance uintptr, widt
 }
 
 func (g *guiState) buildControls() {
-	createLabel(g, 18, 18, 360, 20, "Edit Target")
+	const (
+		pad    = int32(30)
+		secH   = int32(28)
+		rowH   = int32(32)
+		secGap = int32(16)
+		blkGap = int32(24)
+		btnH   = int32(40)
+	)
 
-	g.profileButtons[ProfileHit] = createRadio(g, 18, 46, 150, 24, idProfileHit, "Hit Profile", true)
-	g.profileButtons[ProfileDefault] = createRadio(g, 190, 46, 180, 24, idProfileDefault, "Miss Profile", false)
+	colGap := int32(24)
+	twoColW := (winW - pad*2 - colGap) / 2
+	threeColGap := int32(18)
+	threeColW := (winW - pad*2 - threeColGap*2) / 3
 
-	createLabel(g, 18, 90, 300, 20, "Performance Mode")
-	g.perfButtons[PerfCompetitiveMSOff] = createRadio(g, 18, 118, 180, 24, idPerfCompetitiveOff, "competitive_ms_off", true)
-	g.perfButtons[PerfStandardMSOff] = createRadio(g, 210, 118, 170, 24, idPerfStandardMSOff, "standard_ms_off", false)
-	g.perfButtons[PerfCompetitiveMSOn] = createRadio(g, 18, 146, 180, 24, idPerfCompetitiveOn, "competitive_ms_on", false)
-	g.perfButtons[PerfStandardMSOn] = createRadio(g, 210, 146, 170, 24, idPerfStandardMSOn, "standard_ms_on", false)
+	leftColX := pad
+	rightColX := pad + twoColW + colGap
+	poll2X := pad + threeColW + threeColGap
+	poll3X := poll2X + threeColW + threeColGap
 
-	createLabel(g, 18, 188, 300, 20, "Polling Rate")
-	g.pollButtons[Poll1000] = createRadio(g, 18, 216, 110, 24, idPoll1000, "1000 Hz", true)
-	g.pollButtons[Poll2000] = createRadio(g, 140, 216, 110, 24, idPoll2000, "2000 Hz", false)
-	g.pollButtons[Poll4000] = createRadio(g, 262, 216, 110, 24, idPoll4000, "4000 Hz", false)
+	y := int32(24)
+	g.hdrStatusHW = createLabel(g, pad, y, winW-pad*2, 36, "")
+	y += 54
 
-	createLabel(g, 18, 258, 300, 20, "Trajectory Mode")
-	g.trajButtons[TrajSmoothSensitive] = createRadio(g, 18, 286, 180, 24, idTrajSmooth, "smooth_sensitive", true)
-	g.trajButtons[TrajStableControl] = createRadio(g, 210, 286, 170, 24, idTrajStable, "stable_control", false)
+	createLabel(g, pad, y, winW-pad*2, secH, "Profile")
+	y += secH + secGap
+	g.profileButtons[ProfileHit] = createRadio(g, leftColX, y, twoColW, rowH, idProfileHit, "Hit Profile", true)
+	g.profileButtons[ProfileDefault] = createRadio(g, rightColX, y, twoColW, rowH, idProfileDefault, "Miss (Default)", false)
+	y += rowH + blkGap
+	g.separatorYs = append(g.separatorYs, y-4)
 
-	createButton(g, 18, 330, 390, 30, idCaptureFG, "Append Foreground Process In 10s")
-	g.statusHW = createLabel(g, 18, 372, 390, 106, "")
+	createLabel(g, pad, y, winW-pad*2, secH, "Performance Mode")
+	y += secH + secGap
+	g.perfBaseButtons[0] = createRadio(g, leftColX, y, twoColW, rowH, idPerfCompetitive, "competitive", true)
+	g.perfBaseButtons[1] = createRadio(g, rightColX, y, twoColW, rowH, idPerfStandard, "standard", false)
+	y += rowH + blkGap
+	g.separatorYs = append(g.separatorYs, y-4)
+
+	createLabel(g, pad, y, winW-pad*2, secH, "Motion Sync")
+	y += secH + secGap
+	g.motionSyncButtons[0] = createRadio(g, leftColX, y, twoColW, rowH, idMSOff, "off", true)
+	g.motionSyncButtons[1] = createRadio(g, rightColX, y, twoColW, rowH, idMSOn, "on", false)
+	y += rowH + blkGap
+	g.separatorYs = append(g.separatorYs, y-4)
+
+	createLabel(g, pad, y, winW-pad*2, secH, "Polling Rate")
+	y += secH + secGap
+	g.pollButtons[Poll1000] = createRadio(g, pad, y, threeColW, rowH, idPoll1000, "1000 Hz", true)
+	g.pollButtons[Poll2000] = createRadio(g, poll2X, y, threeColW, rowH, idPoll2000, "2000 Hz", false)
+	g.pollButtons[Poll4000] = createRadio(g, poll3X, y, threeColW, rowH, idPoll4000, "4000 Hz", false)
+	y += rowH + blkGap
+	g.separatorYs = append(g.separatorYs, y-4)
+
+	createLabel(g, pad, y, winW-pad*2, secH, "Trajectory Mode")
+	y += secH + secGap
+	g.trajButtons[TrajSmoothSensitive] = createRadio(g, leftColX, y, twoColW, rowH, idTrajSmooth, "smooth_sensitive", true)
+	g.trajButtons[TrajStableControl] = createRadio(g, rightColX, y, twoColW, rowH, idTrajStable, "stable_control", false)
+	y += rowH + blkGap
+	g.separatorYs = append(g.separatorYs, y-4)
+
+	createButton(g, pad, y, winW-pad*2, btnH, idCaptureFG, "Append Foreground Process In 10s")
+	y += btnH + 20
+
+	statusLineH := int32(24)
+	statusGap := int32(4)
+	for i := range g.statusLines {
+		g.statusLines[i] = createLabel(g, pad, y, winW-pad*2, statusLineH, "")
+		y += statusLineH + statusGap
+	}
 }
 
 func createLabel(g *guiState, x, y, w, h int32, text string) uintptr {
@@ -359,7 +462,10 @@ func createLabel(g *guiState, x, y, w, h int32, text string) uintptr {
 		uintptr(unsafe.Pointer(syscall.StringToUTF16Ptr("STATIC"))),
 		uintptr(unsafe.Pointer(syscall.StringToUTF16Ptr(text))),
 		uintptr(wsChild|wsVisible),
-		uintptr(x), uintptr(y), uintptr(w+buttonExtraWidth), uintptr(h+buttonExtraHeight),
+		uintptr(x),
+		uintptr(y),
+		uintptr(w),
+		uintptr(h),
 		g.cfgHwnd,
 		0,
 		g.hInstance,
@@ -379,7 +485,10 @@ func createRadio(g *guiState, x, y, w, h int32, id int, text string, group bool)
 		uintptr(unsafe.Pointer(syscall.StringToUTF16Ptr("BUTTON"))),
 		uintptr(unsafe.Pointer(syscall.StringToUTF16Ptr(text))),
 		style,
-		uintptr(x), uintptr(y), uintptr(w+buttonExtraWidth), uintptr(h+buttonExtraHeight),
+		uintptr(x),
+		uintptr(y),
+		uintptr(w),
+		uintptr(h),
 		g.cfgHwnd,
 		uintptr(id),
 		g.hInstance,
@@ -395,7 +504,10 @@ func createButton(g *guiState, x, y, w, h int32, id int, text string) uintptr {
 		uintptr(unsafe.Pointer(syscall.StringToUTF16Ptr("BUTTON"))),
 		uintptr(unsafe.Pointer(syscall.StringToUTF16Ptr(text))),
 		uintptr(wsChild|wsVisible|wsTabStop),
-		uintptr(x), uintptr(y), uintptr(w+buttonExtraWidth), uintptr(h+buttonExtraHeight),
+		uintptr(x),
+		uintptr(y),
+		uintptr(w),
+		uintptr(h),
 		g.cfgHwnd,
 		uintptr(id),
 		g.hInstance,
@@ -405,14 +517,18 @@ func createButton(g *guiState, x, y, w, h int32, id int, text string) uintptr {
 	return hwnd
 }
 
-func createUIFont() uintptr {
-	name := syscall.StringToUTF16Ptr("Microsoft YaHei UI")
+func createUIFont(ptSize int32, bold bool) uintptr {
+	weight := uintptr(400)
+	if bold {
+		weight = 700
+	}
+	name := syscall.StringToUTF16Ptr("Segoe UI Variable Text")
 	font, _, _ := procCreateFontW.Call(
-		u32ptrFromI32(-18),
+		u32ptrFromI32(-ptSize),
 		0,
 		0,
 		0,
-		400,
+		weight,
 		0,
 		0,
 		0,
@@ -426,12 +542,16 @@ func createUIFont() uintptr {
 	return font
 }
 
-func (g *guiState) applyUIFont() {
-	if g.uiFont == 0 {
-		return
+func (g *guiState) applyFonts() {
+	if g.uiFont != 0 {
+		for _, hwnd := range g.controls {
+			procSendMessageW.Call(hwnd, wmSetFont, g.uiFont, 1)
+		}
 	}
-	for _, hwnd := range g.controls {
-		procSendMessageW.Call(hwnd, wmSetFont, g.uiFont, 1)
+	if g.statusFont != 0 {
+		for _, hwnd := range g.statusLines {
+			procSendMessageW.Call(hwnd, wmSetFont, g.statusFont, 1)
+		}
 	}
 }
 
@@ -483,6 +603,23 @@ func guiWndProc(hwnd uintptr, msg uint32, wParam uintptr, lParam uintptr) uintpt
 	case wmCommand:
 		globalGUI.handleCommand(controlID(wParam))
 		return 0
+	case wmPaint:
+		if hwnd == globalGUI.cfgHwnd {
+			globalGUI.paintWindow()
+			return 0
+		}
+	case wmEraseBkgnd:
+		if hwnd == globalGUI.cfgHwnd && globalGUI.hbrBg != 0 {
+			var rc RECT
+			procGetClientRect.Call(hwnd, uintptr(unsafe.Pointer(&rc)))
+			procFillRect.Call(wParam, uintptr(unsafe.Pointer(&rc)), globalGUI.hbrBg)
+			return 1
+		}
+	case wmCtlColorStatic, wmCtlColorBtn:
+		procSetBkMode.Call(wParam, transparent)
+		procSetTextColor.Call(wParam, clrText)
+		procSetBkColor.Call(wParam, clrBg)
+		return globalGUI.hbrBg
 	case wmClose:
 		if hwnd == globalGUI.cfgHwnd {
 			procShowWindow.Call(hwnd, swHide)
@@ -498,7 +635,7 @@ func guiWndProc(hwnd uintptr, msg uint32, wParam uintptr, lParam uintptr) uintpt
 		switch trayEvent(lParam) {
 		case wmLButtonDbl:
 			globalGUI.showConfigWindow()
-		case wmRButtonUp, wmContext:
+		case wmRButtonUp:
 			globalGUI.showTrayMenu()
 		}
 		return 0
@@ -506,6 +643,29 @@ func guiWndProc(hwnd uintptr, msg uint32, wParam uintptr, lParam uintptr) uintpt
 
 	r, _, _ := procDefWindowProcW.Call(hwnd, uintptr(msg), wParam, lParam)
 	return r
+}
+
+func (g *guiState) paintWindow() {
+	var ps PAINTSTRUCT
+	hdc, _, _ := procBeginPaint.Call(g.cfgHwnd, uintptr(unsafe.Pointer(&ps)))
+	if hdc == 0 {
+		return
+	}
+	defer procEndPaint.Call(g.cfgHwnd, uintptr(unsafe.Pointer(&ps)))
+
+	accentBrush, _, _ := procCreateSolidBrush.Call(clrAccent)
+	rc := RECT{Left: 0, Top: 0, Right: winW, Bottom: 4}
+	procFillRect.Call(hdc, uintptr(unsafe.Pointer(&rc)), accentBrush)
+	procDeleteObject.Call(accentBrush)
+
+	pen, _, _ := procCreatePen.Call(psSolid, 1, clrSeparator)
+	oldPen, _, _ := procSelectObject.Call(hdc, pen)
+	for _, y := range g.separatorYs {
+		procMoveToEx.Call(hdc, 30, uintptr(y), 0)
+		procLineTo.Call(hdc, uintptr(winW-30), uintptr(y))
+	}
+	procSelectObject.Call(hdc, oldPen)
+	procDeleteObject.Call(pen)
 }
 
 func (g *guiState) handleCommand(id int) {
@@ -516,22 +676,22 @@ func (g *guiState) handleCommand(id int) {
 	case idProfileDefault:
 		g.currentProfile = ProfileDefault
 		g.syncControls()
-	case idCaptureFG:
-		g.statusNote = "Foreground process append queued for 10 seconds later."
-		g.scheduleForegroundAppend()
-		g.syncControls()
 	case idMenuOpen:
 		g.showConfigWindow()
 	case idMenuExit:
 		g.close()
-	case idPerfStandardMSOff:
-		g.applySelection(PerfStandardMSOff, 0, 0)
-	case idPerfCompetitiveOff:
-		g.applySelection(PerfCompetitiveMSOff, 0, 0)
-	case idPerfCompetitiveOn:
-		g.applySelection(PerfCompetitiveMSOn, 0, 0)
-	case idPerfStandardMSOn:
-		g.applySelection(PerfStandardMSOn, 0, 0)
+	case idCaptureFG:
+		g.statusNote = "Foreground process append queued for 10 seconds later."
+		g.scheduleForegroundAppend()
+		g.syncControls()
+	case idPerfCompetitive:
+		g.applyPerfBase(0)
+	case idPerfStandard:
+		g.applyPerfBase(1)
+	case idMSOff:
+		g.applyMotionSync(0)
+	case idMSOn:
+		g.applyMotionSync(1)
 	case idPoll1000:
 		g.applySelection(0, Poll1000, 0)
 	case idPoll2000:
@@ -570,11 +730,62 @@ func (g *guiState) applySelection(perf PerfMode, poll PollingRate, traj Trajecto
 	}
 
 	if err := g.app.UpdateProfile(g.currentProfile, perf, poll, traj); err != nil {
+		g.statusNote = "Write config failed."
+		g.syncControls()
 		showMessageBox(g.cfgHwnd, "Write config failed", err.Error(), mbOK|mbIconError)
 		return
 	}
+
 	g.statusNote = "Settings saved."
 	g.syncControls()
+}
+
+func decomposePerf(mode PerfMode) (base int, motionSync int) {
+	switch mode {
+	case PerfCompetitiveMSOff:
+		return 0, 0
+	case PerfStandardMSOff:
+		return 1, 0
+	case PerfCompetitiveMSOn:
+		return 0, 1
+	case PerfStandardMSOn:
+		return 1, 1
+	default:
+		return 0, 0
+	}
+}
+
+func composePerf(base int, motionSync int) PerfMode {
+	if base == 0 {
+		if motionSync == 0 {
+			return PerfCompetitiveMSOff
+		}
+		return PerfCompetitiveMSOn
+	}
+	if motionSync == 0 {
+		return PerfStandardMSOff
+	}
+	return PerfStandardMSOn
+}
+
+func (g *guiState) applyPerfBase(base int) {
+	cfg := g.app.CurrentConfig()
+	current := cfg.DefaultMode
+	if g.currentProfile == ProfileHit {
+		current = cfg.HitMode
+	}
+	_, motionSync := decomposePerf(current)
+	g.applySelection(composePerf(base, motionSync), 0, 0)
+}
+
+func (g *guiState) applyMotionSync(motionSync int) {
+	cfg := g.app.CurrentConfig()
+	current := cfg.DefaultMode
+	if g.currentProfile == ProfileHit {
+		current = cfg.HitMode
+	}
+	base, _ := decomposePerf(current)
+	g.applySelection(composePerf(base, motionSync), 0, 0)
 }
 
 func (g *guiState) syncControls() {
@@ -596,9 +807,12 @@ func (g *guiState) syncControls() {
 		traj = cfg.DefaultTraj
 	}
 
-	for value, hwnd := range g.perfButtons {
-		setChecked(hwnd, value == perf)
-	}
+	base, motionSync := decomposePerf(perf)
+	setChecked(g.perfBaseButtons[0], base == 0)
+	setChecked(g.perfBaseButtons[1], base == 1)
+	setChecked(g.motionSyncButtons[0], motionSync == 0)
+	setChecked(g.motionSyncButtons[1], motionSync == 1)
+
 	for value, hwnd := range g.pollButtons {
 		setChecked(hwnd, value == poll)
 	}
@@ -606,19 +820,31 @@ func (g *guiState) syncControls() {
 		setChecked(hwnd, value == traj)
 	}
 
-	statusNote := g.statusNote
-	if statusNote == "" {
-		statusNote = "Status: Ready."
+	devCount := g.app.DevCount()
+	devErr := g.app.LastDevError()
+	switch {
+	case devErr != "":
+		setWindowText(g.hdrStatusHW, "VAXEE Device: Not Connected")
+	case devCount > 0:
+		setWindowText(g.hdrStatusHW, fmt.Sprintf("VAXEE Device: %d connected", devCount))
+	default:
+		setWindowText(g.hdrStatusHW, "VAXEE Device: Scanning...")
 	}
 
-	status := fmt.Sprintf(
-		"Current: %s\r\nConfig: %s\r\n%s\r\n%s",
-		profileName(g.currentProfile),
-		filepath.Base(cfg.ConfigPath),
-		statusNote,
-		BatteryStatusTextVAXEE(),
-	)
-	setWindowText(g.statusHW, status)
+	statusNote := g.statusNote
+	if statusNote == "" {
+		statusNote = "Ready."
+	}
+
+	deviceLine := fmt.Sprintf("Device: %d connected  |  settings sync to detected devices", devCount)
+	if devErr != "" {
+		deviceLine = fmt.Sprintf("Device: %s", devErr)
+	}
+
+	setWindowText(g.statusLines[0], fmt.Sprintf("Editing: %s  |  Config: %s", profileName(g.currentProfile), filepath.Base(cfg.ConfigPath)))
+	setWindowText(g.statusLines[1], deviceLine)
+	setWindowText(g.statusLines[2], fmt.Sprintf("Target: %s  |  Poll: %d Hz  |  Traj: %s", perfName(perf), poll, trajName(traj)))
+	setWindowText(g.statusLines[3], fmt.Sprintf("Status: %s  |  %s", statusNote, BatteryStatusTextVAXEE()))
 }
 
 func (g *guiState) scheduleForegroundAppend() {
@@ -637,8 +863,6 @@ func (g *guiState) showTrayMenu() {
 	if menu == 0 {
 		return
 	}
-	defer procDestroyMenu.Call(menu)
-
 	procAppendMenuW.Call(menu, mfString, idMenuOpen, uintptr(unsafe.Pointer(syscall.StringToUTF16Ptr("Open Settings"))))
 	procAppendMenuW.Call(menu, mfString, idMenuExit, uintptr(unsafe.Pointer(syscall.StringToUTF16Ptr("Exit"))))
 
@@ -647,6 +871,7 @@ func (g *guiState) showTrayMenu() {
 	procSetForegroundWin.Call(g.mainHwnd)
 	procTrackPopupMenu.Call(menu, tpmLeftAlign|tpmBottomAlign|tpmRightButton, uintptr(pt.X), uintptr(pt.Y), 0, g.mainHwnd, 0)
 	procPostMessageW.Call(g.mainHwnd, wmNull, 0, 0)
+	procDestroyMenu.Call(menu)
 }
 
 func (g *guiState) close() {
@@ -654,10 +879,6 @@ func (g *guiState) close() {
 		g.cancel()
 	}
 	g.app.CancelForegroundAppend()
-	if g.uiFont != 0 {
-		procDeleteObject.Call(g.uiFont)
-		g.uiFont = 0
-	}
 	if g.cfgHwnd != 0 {
 		procDestroyWindow.Call(g.cfgHwnd)
 		g.cfgHwnd = 0
@@ -666,10 +887,22 @@ func (g *guiState) close() {
 		procDestroyWindow.Call(g.mainHwnd)
 		g.mainHwnd = 0
 	}
-	g.cleanupIcons()
+	g.cleanupResources()
 }
 
-func (g *guiState) cleanupIcons() {
+func (g *guiState) cleanupResources() {
+	if g.uiFont != 0 {
+		procDeleteObject.Call(g.uiFont)
+		g.uiFont = 0
+	}
+	if g.statusFont != 0 {
+		procDeleteObject.Call(g.statusFont)
+		g.statusFont = 0
+	}
+	if g.hbrBg != 0 {
+		procDeleteObject.Call(g.hbrBg)
+		g.hbrBg = 0
+	}
 	destroyIconHandle(g.appIconSm)
 	g.appIconSm = 0
 	destroyIconHandle(g.appIcon)
@@ -724,5 +957,5 @@ func profileName(profile ProfileKind) string {
 	if profile == ProfileHit {
 		return "Hit"
 	}
-	return "Miss(Default)"
+	return "Miss (Default)"
 }
