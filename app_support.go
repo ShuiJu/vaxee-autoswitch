@@ -13,10 +13,11 @@ import (
 )
 
 type Applied struct {
-	perf PerfMode
-	poll PollingRate
-	traj TrajectoryMode
-	ok   bool
+	perf    PerfMode
+	poll    PollingRate
+	traj    TrajectoryMode
+	devices string
+	ok      bool
 }
 
 var (
@@ -159,25 +160,18 @@ func tickOnce(cfg *Config, last *Applied) (switchMsg string, errStr string, devC
 	devs := FindAllVaxeeDevices()
 	logicalCount = len(devs)
 	devCount = CountUniqueVaxeeDevices(devs)
-	if last.ok && last.perf == wantPerf && last.poll == wantPoll && last.traj == wantTraj {
+	deviceSig := VaxeeDeviceSetSignature(devs)
+	if last.ok && last.perf == wantPerf && last.poll == wantPoll && last.traj == wantTraj && last.devices == deviceSig {
 		return "", "", devCount, logicalCount
 	}
 
-	dev, findErr := FindOneVaxeeDevice()
-	if findErr != nil {
-		return "", "未找到可用 VAXEE 设备: " + findErr.Error(), devCount, logicalCount
-	}
-
-	if err := ApplyVaxeeSetting(dev.Path, wantPerf, wantPoll); err != nil {
+	applied, err := ApplyVaxeeProfileToAll(devs, wantPerf, wantPoll, wantTraj)
+	if err != nil {
 		return "", "应用设置失败: " + err.Error(), devCount, logicalCount
 	}
 
-	if err := ApplyVaxeeTrajectory(dev.Path, wantTraj); err != nil {
-		return "", "应用轨迹设置失败: " + err.Error(), devCount, logicalCount
-	}
-
-	*last = Applied{perf: wantPerf, poll: wantPoll, traj: wantTraj, ok: true}
-	PrintBatteryVAXEE(dev)
+	*last = Applied{perf: wantPerf, poll: wantPoll, traj: wantTraj, devices: deviceSig, ok: true}
+	PrintBatteryAllVAXEE(applied)
 
 	if hit {
 		return fmt.Sprintf("[SWITCH] 命中白名单(%s) -> %s + %dHz + traj=%s",

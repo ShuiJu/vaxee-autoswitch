@@ -384,6 +384,34 @@ func queryDeviceInfo(hDevInfo uintptr, devInfoData *SP_DEVINFO_DATA, path string
 	}, true
 }
 
+func vaxeeDeviceKey(dev VaxeeDeviceInfo) string {
+	key := strings.ToLower(strings.TrimSpace(dev.ContainerID))
+	if key != "" {
+		return key
+	}
+	key = vaxeePhysicalKey(dev.Path)
+	if key != "" {
+		return key
+	}
+	return fmt.Sprintf("%04x:%04x:%s:%s", dev.VID, dev.PID, strings.ToLower(dev.Manufacturer), strings.ToLower(dev.Product))
+}
+
+func orderedVaxeeInterfaces(devs []VaxeeDeviceInfo) []VaxeeDeviceInfo {
+	order := make([]VaxeeDeviceInfo, 0, len(devs))
+	for _, d := range devs {
+		if strings.HasSuffix(strings.ToLower(d.Path), `\kbd`) {
+			continue
+		}
+		order = append(order, d)
+	}
+	for _, d := range devs {
+		if strings.HasSuffix(strings.ToLower(d.Path), `\kbd`) {
+			order = append(order, d)
+		}
+	}
+	return order
+}
+
 func EnumerateVaxeeDevices() ([]VaxeeDeviceInfo, error) {
 	g := hidGuid()
 
@@ -473,22 +501,8 @@ func SelectVaxeeControlPath() (VaxeeDeviceInfo, error) {
 		return VaxeeDeviceInfo{}, fmt.Errorf("no VAXEE HID device found")
 	}
 
-	// 先把 \kbd 的放后面（避免先撞键盘集合）
-	order := make([]VaxeeDeviceInfo, 0, len(ds))
-	for _, d := range ds {
-		if strings.HasSuffix(strings.ToLower(d.Path), `\kbd`) {
-			continue
-		}
-		order = append(order, d)
-	}
-	for _, d := range ds {
-		if strings.HasSuffix(strings.ToLower(d.Path), `\kbd`) {
-			order = append(order, d)
-		}
-	}
-
 	// 逐个探测
-	for _, d := range order {
+	for _, d := range orderedVaxeeInterfaces(ds) {
 		flen := int(d.FeatureLen)
 		// 如果 caps 取不到，就先用 64 试探（你的抓包 wLength=64）[9](https://blog.csdn.net/frederick_master/article/details/78845161)
 		if flen <= 0 {
@@ -503,6 +517,53 @@ func SelectVaxeeControlPath() (VaxeeDeviceInfo, error) {
 	}
 
 	return VaxeeDeviceInfo{}, fmt.Errorf("no VAXEE top-level collection accepts Feature ReportID=0x0e")
+}
+
+func SelectAllVaxeeControlPaths() ([]VaxeeDeviceInfo, error) {
+	ds, err := EnumerateVaxeeDevices()
+	if err != nil {
+		return nil, err
+	}
+	return SelectAllVaxeeControlPathsFrom(ds)
+}
+
+func SelectAllVaxeeControlPathsFrom(ds []VaxeeDeviceInfo) ([]VaxeeDeviceInfo, error) {
+	if len(ds) == 0 {
+		return nil, fmt.Errorf("no VAXEE HID device found")
+	}
+
+	physicalCount := CountUniqueVaxeeDevices(ds)
+	seen := make(map[string]struct{}, physicalCount)
+	out := make([]VaxeeDeviceInfo, 0, physicalCount)
+
+	for _, d := range orderedVaxeeInterfaces(ds) {
+		key := vaxeeDeviceKey(d)
+		if key == "" {
+			key = strings.ToLower(strings.TrimSpace(d.Path))
+		}
+		if _, ok := seen[key]; ok {
+			continue
+		}
+
+		flen := int(d.FeatureLen)
+		if flen <= 0 {
+			flen = 64
+		}
+		if _, err := getFeature(d.Path, 0x0e, flen); err != nil {
+			continue
+		}
+
+		seen[key] = struct{}{}
+		out = append(out, d)
+	}
+
+	if len(out) == 0 {
+		return nil, fmt.Errorf("no VAXEE top-level collection accepts Feature ReportID=0x0e")
+	}
+	if physicalCount > len(out) {
+		return out, fmt.Errorf("found %d VAXEE device(s), but only %d expose the control report", physicalCount, len(out))
+	}
+	return out, nil
 }
 
 func FindOneVaxeeDevice() (VaxeeDeviceInfo, error) {
@@ -531,32 +592,133 @@ func CountUniqueVaxeeDevices(devs []VaxeeDeviceInfo) int {
 	}
 	seen := make(map[string]struct{}, len(devs))
 	for _, dev := range devs {
-		key := strings.ToLower(strings.TrimSpace(dev.ContainerID))
-		if key == "" {
-			key = vaxeePhysicalKey(dev.Path)
-		}
-		if key == "" {
-			key = fmt.Sprintf("%04x:%04x:%s:%s", dev.VID, dev.PID, strings.ToLower(dev.Manufacturer), strings.ToLower(dev.Product))
-		}
-		seen[key] = struct{}{}
+		seen[vaxeeDeviceKey(dev)] = struct{}{}
 	}
 	return len(seen)
 }
 
+func VaxeeDeviceSetSignature(devs []VaxeeDeviceInfo) string {
+	if len(devs) == 0 {
+		return ""
+	}
+	seen := make(map[string]struct{}, len(devs))
+	keys := make([]string, 0, len(devs))
+	for _, dev := range devs {
+		key := vaxeeDeviceKey(dev)
+		if _, ok := seen[key]; ok {
+			continue
+		}
+		seen[key] = struct{}{}
+		keys = append(keys, key)
+	}
+	return strings.Join(keys, "|")
+}
+
+func VaxeePhysicalDeviceNames(devs []VaxeeDeviceInfo, aliases map[string]string) []string {
+	if len(devs) == 0 {
+		return nil
+	}
+
+	seen := make(map[string]struct{}, len(devs))
+	firstByKey := make(map[string]VaxeeDeviceInfo, len(devs))
+	keys := make([]string, 0, len(devs))
+
+	for _, dev := range devs {
+		key := vaxeeDeviceKey(dev)
+		if _, ok := seen[key]; ok {
+			continue
+		}
+		seen[key] = struct{}{}
+		firstByKey[key] = dev
+		keys = append(keys, key)
+	}
+
+	names := make([]string, 0, len(keys))
+	for _, key := range keys {
+		dev := firstByKey[key]
+		if alias := vaxeeDeviceAlias(dev, key, aliases); alias != "" {
+			names = append(names, alias)
+			continue
+		}
+
+		names = append(names, fmt.Sprintf("未知设备[%s]", shortVaxeeKey(key)))
+	}
+	return names
+}
+
+func vaxeeDeviceAlias(dev VaxeeDeviceInfo, key string, aliases map[string]string) string {
+	candidates := []string{
+		key,
+		strings.ToLower(strings.TrimSpace(dev.ContainerID)),
+		vaxeePhysicalKey(dev.Path),
+		shortVaxeeKey(key),
+	}
+	for _, candidate := range candidates {
+		if candidate == "" {
+			continue
+		}
+		candidate = strings.ToLower(candidate)
+		if alias := strings.TrimSpace(aliases[candidate]); alias != "" {
+			return alias
+		}
+		if alias := strings.TrimSpace(builtinVaxeeDeviceAliases[candidate]); alias != "" {
+			return alias
+		}
+	}
+	return ""
+}
+
+var builtinVaxeeDeviceAliases = map[string]string{
+	"05e6f9e6-3cc8-11f1-a655-d8bbc1c6fbcf": "E1",
+	"aa6e40cd-32ab-11f1-a638-806e6f6e6963": "NP01S V2",
+}
+
+func shortVaxeeKey(key string) string {
+	key = strings.TrimSpace(key)
+	if key == "" {
+		return "unknown"
+	}
+	if len(key) > 8 {
+		return key[:8]
+	}
+	return key
+}
+
+func resolveVaxeeControlDevice(path string) (VaxeeDeviceInfo, error) {
+	path = strings.TrimSpace(path)
+	if path == "" {
+		return FindOneVaxeeDevice()
+	}
+
+	dev := VaxeeDeviceInfo{Path: path, FeatureLen: 64}
+	if devs, err := EnumerateVaxeeDevices(); err == nil {
+		for _, d := range devs {
+			if strings.EqualFold(d.Path, path) {
+				dev = d
+				break
+			}
+		}
+	}
+	return dev, nil
+}
+
 // 应用设置：按 caps.FeatureLen 发送，避免长度不匹配[1](https://learn.microsoft.com/en-us/windows-hardware/drivers/ddi/hidsdi/nf-hidsdi-hidd_setfeature)[2](https://learn.microsoft.com/zh-tw/windows-hardware/drivers/ddi/hidpi/ns-hidpi-_hidp_caps)
 func ApplyVaxeeSetting(path string, perf PerfMode, poll PollingRate) error {
-	// 重新查一次当前控制通道 caps（保证 feature length 正确）
-	dev, err := FindOneVaxeeDevice()
-	if err == nil && dev.Path != "" {
-		path = dev.Path
+	dev, err := resolveVaxeeControlDevice(path)
+	if err != nil {
+		return err
 	}
+	return applyVaxeeSettingToDevice(dev, perf, poll)
+}
+
+func applyVaxeeSettingToDevice(dev VaxeeDeviceInfo, perf PerfMode, poll PollingRate) error {
 	flen := int(dev.FeatureLen)
 	if flen <= 0 {
 		flen = 64
 	}
 
 	// 1) 性能模式 cmd=0x08
-	if err := sendFeatureReport(path, buildReportSized(flen, 0x08, byte(perf))); err != nil {
+	if err := sendFeatureReport(dev.Path, buildReportSized(flen, 0x08, byte(perf))); err != nil {
 		return fmt.Errorf("perf feature report failed: %w", err)
 	}
 	time.Sleep(vaxeeCommandInterval)
@@ -566,11 +728,45 @@ func ApplyVaxeeSetting(path string, perf PerfMode, poll PollingRate) error {
 	if err != nil {
 		return err
 	}
-	if err := sendFeatureReport(path, buildReportSized(flen, 0x07, yy)); err != nil {
+	if err := sendFeatureReport(dev.Path, buildReportSized(flen, 0x07, yy)); err != nil {
 		return fmt.Errorf("poll feature report failed: %w", err)
 	}
 	time.Sleep(vaxeeCommandInterval)
 	return nil
+}
+
+func ApplyVaxeeProfileToAll(devs []VaxeeDeviceInfo, perf PerfMode, poll PollingRate, traj TrajectoryMode) ([]VaxeeDeviceInfo, error) {
+	if len(devs) == 0 {
+		var err error
+		devs, err = EnumerateVaxeeDevices()
+		if err != nil {
+			return nil, err
+		}
+	}
+
+	controls, selectErr := SelectAllVaxeeControlPathsFrom(devs)
+	if len(controls) == 0 {
+		return nil, selectErr
+	}
+
+	var errs []string
+	if selectErr != nil {
+		errs = append(errs, selectErr.Error())
+	}
+	for i, dev := range controls {
+		if err := applyVaxeeSettingToDevice(dev, perf, poll); err != nil {
+			errs = append(errs, fmt.Sprintf("device %d setting: %v", i+1, err))
+			continue
+		}
+		if err := applyVaxeeTrajectoryToDevice(dev, traj); err != nil {
+			errs = append(errs, fmt.Sprintf("device %d trajectory: %v", i+1, err))
+		}
+	}
+
+	if len(errs) > 0 {
+		return controls, fmt.Errorf("%s", strings.Join(errs, "; "))
+	}
+	return controls, nil
 }
 
 // EnumerateAllHidDevices 枚举所有 HID 顶级集合（能读到 attributes/字符串的接口）
@@ -672,17 +868,20 @@ func buildTrajectoryReportSized(total int, mode TrajectoryMode) []byte {
 }
 
 func ApplyVaxeeTrajectory(path string, mode TrajectoryMode) error {
-	// 重新查一次控制通道（保证 FeatureLen 正确）
-	dev, err := FindOneVaxeeDevice()
-	if err == nil && dev.Path != "" {
-		path = dev.Path
+	dev, err := resolveVaxeeControlDevice(path)
+	if err != nil {
+		return err
 	}
+	return applyVaxeeTrajectoryToDevice(dev, mode)
+}
+
+func applyVaxeeTrajectoryToDevice(dev VaxeeDeviceInfo, mode TrajectoryMode) error {
 	flen := int(dev.FeatureLen)
 	if flen <= 0 {
 		flen = 64
 	}
 
-	if err := sendFeatureReport(path, buildTrajectoryReportSized(flen, mode)); err != nil {
+	if err := sendFeatureReport(dev.Path, buildTrajectoryReportSized(flen, mode)); err != nil {
 		return fmt.Errorf("trajectory feature report failed: %w", err)
 	}
 	time.Sleep(vaxeeCommandInterval)

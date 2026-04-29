@@ -4,8 +4,16 @@ package main
 
 import (
 	"fmt"
+	"strings"
 	"time"
 )
+
+type VaxeeBatteryInfo struct {
+	Name     string
+	Percent  int
+	Charging bool
+	OK       bool
+}
 
 const vaxeeBattDebug = false // 若仍异常可设 true 打印页回包头部
 
@@ -115,21 +123,109 @@ func ReadBatteryVAXEE(dev VaxeeDeviceInfo) (percent int, charging bool, ok bool)
 }
 
 func BatteryStatusTextVAXEE() string {
-	dev, err := FindOneVaxeeDevice()
-	if err != nil {
-		return "Battery: N/A"
+	line, _, _ := BatteryStatusLinesVAXEE()
+	return line
+}
+
+func BatteryStatusLinesVAXEE() (summary string, extrema string, tooltip string) {
+	devs, err := SelectAllVaxeeControlPaths()
+	if err != nil && len(devs) == 0 {
+		return "电池电量统计: N/A", "最高电量设备: N/A | 最低电量设备: N/A", "暂无可用电量信息"
+	}
+	return BatteryStatusLinesForDevicesVAXEE(devs)
+}
+
+func BatteryStatusTextForDevicesVAXEE(devs []VaxeeDeviceInfo) string {
+	summary, _, _ := BatteryStatusLinesForDevicesVAXEE(devs)
+	return summary
+}
+
+func BatteryStatusLinesForDevicesVAXEE(devs []VaxeeDeviceInfo) (summary string, extrema string, tooltip string) {
+	if len(devs) == 0 {
+		return "电池电量统计: N/A", "最高电量设备: N/A | 最低电量设备: N/A", "暂无可用电量信息"
 	}
 
-	pct, chg, ok := ReadBatteryVAXEE(dev)
-	if !ok {
-		return "Battery: N/A"
+	infos := ReadBatteryDetailsVAXEE(devs)
+	tipParts := make([]string, 0, len(infos))
+	var maxInfo VaxeeBatteryInfo
+	var minInfo VaxeeBatteryInfo
+	found := false
+
+	for _, info := range infos {
+		if !info.OK {
+			tipParts = append(tipParts, fmt.Sprintf("%s现在是 N/A", info.Name))
+			continue
+		}
+		tipParts = append(tipParts, fmt.Sprintf("%s现在是%d%%", info.Name, info.Percent))
+
+		if !found || info.Percent > maxInfo.Percent {
+			maxInfo = info
+		}
+		if !found || info.Percent < minInfo.Percent {
+			minInfo = info
+		}
+		found = true
 	}
 
-	state := "discharging"
-	if chg {
-		state = "charging"
+	if !found {
+		extrema = "最高电量设备: N/A | 最低电量设备: N/A"
+	} else {
+		extrema = fmt.Sprintf("最高电量设备: %d%% (%s) | 最低电量设备: %d%% (%s)",
+			maxInfo.Percent, batteryStateText(maxInfo.Charging),
+			minInfo.Percent, batteryStateText(minInfo.Charging))
 	}
-	return fmt.Sprintf("Battery: %d%% (%s)", pct, state)
+	return "电池电量统计:", extrema, strings.Join(tipParts, "\r\n")
+}
+
+func ReadBatteryDetailsVAXEE(devs []VaxeeDeviceInfo) []VaxeeBatteryInfo {
+	infos := make([]VaxeeBatteryInfo, 0, len(devs))
+	for i, dev := range devs {
+		pct, chg, ok := ReadBatteryVAXEE(dev)
+		infos = append(infos, VaxeeBatteryInfo{
+			Name:     vaxeeBatteryDeviceName(dev, i),
+			Percent:  pct,
+			Charging: chg,
+			OK:       ok,
+		})
+	}
+	return infos
+}
+
+func batteryStateText(charging bool) string {
+	if charging {
+		return "充电中"
+	}
+	return "未充电"
+}
+
+func vaxeeBatteryDeviceName(dev VaxeeDeviceInfo, idx int) string {
+	name := strings.TrimSpace(dev.Product)
+	if name == "" {
+		name = strings.TrimSpace(dev.Manufacturer)
+	}
+	if name == "" {
+		return fmt.Sprintf("D%d", idx+1)
+	}
+
+	name = strings.TrimSpace(stripLeadingFold(name, "VAXEE"))
+	name = strings.TrimSpace(stripLeadingFold(name, "ZYGEN"))
+	name = strings.NewReplacer(
+		"NP-01S", "NP01S",
+		"NP-01", "NP01",
+		"np-01s", "NP01S",
+		"np-01", "NP01",
+	).Replace(name)
+	if name == "" {
+		return fmt.Sprintf("D%d", idx+1)
+	}
+	return name
+}
+
+func stripLeadingFold(s string, prefix string) string {
+	if len(s) < len(prefix) || !strings.EqualFold(s[:len(prefix)], prefix) {
+		return s
+	}
+	return strings.TrimSpace(s[len(prefix):])
 }
 
 func PrintBatteryVAXEE(dev VaxeeDeviceInfo) {
@@ -143,6 +239,25 @@ func PrintBatteryVAXEE(dev VaxeeDeviceInfo) {
 		state = "charging"
 	}
 	fmt.Printf("🔋 VAXEE Battery: %d%% (%s)\n", pct, state)
+}
+
+func PrintBatteryAllVAXEE(devs []VaxeeDeviceInfo) {
+	if len(devs) == 0 {
+		fmt.Printf("[BAT] VAXEE Battery: N/A\n")
+		return
+	}
+	for i, dev := range devs {
+		pct, chg, ok := ReadBatteryVAXEE(dev)
+		if !ok {
+			fmt.Printf("[BAT] VAXEE #%d Battery: N/A\n", i+1)
+			continue
+		}
+		state := "discharging"
+		if chg {
+			state = "charging"
+		}
+		fmt.Printf("[BAT] VAXEE #%d Battery: %d%% (%s)\n", i+1, pct, state)
+	}
 }
 
 func min(a, b int) int {

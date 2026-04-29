@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"syscall"
 	"time"
 	"unsafe"
@@ -43,7 +44,7 @@ type guiState struct {
 	cfgHwnd   uintptr
 
 	hdrStatusHW uintptr
-	statusLines [4]uintptr
+	statusLines [5]uintptr
 
 	uiFont     uintptr
 	statusFont uintptr
@@ -250,7 +251,7 @@ const (
 	dwmwaUseImmersiveDarkMode = 20
 
 	winW = 800
-	winH = 780
+	winH = 820
 )
 
 func runGUIApp() error {
@@ -827,14 +828,14 @@ func (g *guiState) syncControls() {
 	case devErr != "":
 		setWindowText(g.hdrStatusHW, "VAXEE Device: Not Connected")
 	case devCount > 0:
-		setWindowText(g.hdrStatusHW, fmt.Sprintf("VAXEE Device: %d connected", devCount))
+		names := VaxeePhysicalDeviceNames(FindAllVaxeeDevices(), nil)
+		nameText := ""
+		if len(names) > 0 {
+			nameText = fmt.Sprintf("(%s)", strings.Join(names, ", "))
+		}
+		setWindowText(g.hdrStatusHW, fmt.Sprintf("VAXEE Device: %d connected%s", devCount, nameText))
 	default:
 		setWindowText(g.hdrStatusHW, "VAXEE Device: Scanning...")
-	}
-
-	statusNote := g.statusNote
-	if statusNote == "" {
-		statusNote = "Ready."
 	}
 
 	deviceLine := fmt.Sprintf("Device: %d connected  |  settings sync to detected devices", devCount)
@@ -848,7 +849,9 @@ func (g *guiState) syncControls() {
 	setWindowText(g.statusLines[0], fmt.Sprintf("Editing: %s  |  Config: %s", profileName(g.currentProfile), filepath.Base(cfg.ConfigPath)))
 	setWindowText(g.statusLines[1], deviceLine)
 	setWindowText(g.statusLines[2], fmt.Sprintf("Target: %s  |  Poll: %d Hz  |  Traj: %s", perfName(perf), poll, trajName(traj)))
-	setWindowText(g.statusLines[3], fmt.Sprintf("Status: %s  |  %s", statusNote, BatteryStatusTextVAXEE()))
+	batterySummary, batteryExtrema, _ := BatteryStatusLinesVAXEE()
+	setWindowText(g.statusLines[3], batterySummary)
+	setWindowText(g.statusLines[4], batteryExtrema)
 }
 
 func (g *guiState) scheduleForegroundAppend() {
