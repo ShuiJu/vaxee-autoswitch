@@ -107,7 +107,7 @@ func defaultConfigText() string {
 # 2) 其余非空、非 # 开头的行，会被当作“白名单程序名”（每行一个，例如 cs2.exe）
 #
 # 可配置项：
-# interval_seconds=60
+# interval_seconds=1
 #
 # hit_mode=competitive_ms_off      # standard_ms_off / competitive_ms_off / competitive_ms_on / standard_ms_on
 # hit_poll=1000                    # 1000 / 2000 / 4000
@@ -118,7 +118,7 @@ func defaultConfigText() string {
 # default_traj=smooth_sensitive
 #
 # --------------------------------------------
-interval_seconds=60
+interval_seconds=1
 
 hit_mode=competitive_ms_off
 hit_poll=1000
@@ -203,7 +203,7 @@ func loadConfig(path string) (*Config, time.Time, error) {
 	}
 
 	cfg := &Config{
-		Interval: 60 * time.Second,
+		Interval: 1 * time.Second,
 
 		HitMode: PerfCompetitiveMSOff,
 		HitPoll: Poll1000,

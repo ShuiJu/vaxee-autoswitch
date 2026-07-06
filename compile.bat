@@ -1,7 +1,7 @@
 @echo off
 setlocal
 
-set "OUTPUT_EXE=vaxee-autoswitch.V0.4.2.exe"
+set "OUTPUT_EXE=vaxee-autoswitch.V0.4.2.1.exe"
 set "RSRC_EXE=%USERPROFILE%\go\bin\rsrc.exe"
 set "SYSO_FILE=rsrc_windows_amd64.syso"
 
