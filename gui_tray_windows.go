@@ -44,7 +44,7 @@ type guiState struct {
 	cfgHwnd   uintptr
 
 	hdrStatusHW uintptr
-	statusLines [5]uintptr
+	statusLines [4]uintptr
 
 	uiFont     uintptr
 	statusFont uintptr
@@ -347,7 +347,7 @@ func (g *guiState) init() error {
 	g.cfgHwnd = cfgHwnd
 
 	g.uiFont = createUIFont(24, false)
-	g.statusFont = createUIFont(18, false)
+	g.statusFont = createUIFont(22, false)
 	g.buildControls()
 	g.applyFonts()
 	g.syncControls()
@@ -468,7 +468,7 @@ func (g *guiState) buildControls() {
 	createButton(g, pad, y, winW-pad*2, btnH, idCaptureFG, "十秒后登记前台窗口为高性能应用")
 	y += btnH + 20
 
-	statusLineH := int32(24)
+	statusLineH := int32(28)
 	statusGap := int32(4)
 	for i := range g.statusLines {
 		g.statusLines[i] = createLabel(g, pad, y, winW-pad*2, statusLineH, "")
@@ -939,22 +939,14 @@ func (g *guiState) syncControls() {
 		setWindowText(g.hdrStatusHW, "VAXEE Device: Scanning...")
 	}
 
-	// Device 行：仅显示已连接物理设备数，不再附带 logical HID 信息
-	deviceLine := fmt.Sprintf("Device: %d Connected", devCount)
-	if devErr != "" {
-		deviceLine = fmt.Sprintf("Device: %s", devErr)
-	}
-
-	setWindowText(g.statusLines[0], deviceLine)
-
-	// Target 行：显示读取到的设备当前实际模式（最后一次成功写入设备的设置）
-	targetLine := buildDeviceCurrentModeLine(g.app)
-	setWindowText(g.statusLines[1], targetLine)
+	// Target 行：显示读取到的设备当前实际模式（最后一次成功写入设备的设置），拆成两行
+	targetLine1, targetLine2 := buildDeviceCurrentModeLine(g.app)
+	setWindowText(g.statusLines[0], targetLine1)
+	setWindowText(g.statusLines[1], targetLine2)
 
 	batterySummary, batteryExtrema, _ := BatteryStatusLinesVAXEE()
 	setWindowText(g.statusLines[2], batterySummary)
 	setWindowText(g.statusLines[3], batteryExtrema)
-	setWindowText(g.statusLines[4], "")
 }
 
 func (g *guiState) scheduleForegroundAppend() {
@@ -1076,11 +1068,13 @@ func profileName(profile ProfileKind) string {
 	return "Miss (Default)"
 }
 
-// buildDeviceCurrentModeLine 把最后一次成功写入设备的设置格式化为一行，
+// buildDeviceCurrentModeLine 把最后一次成功写入设备的设置格式化为两行，
 // 用于 GUI 的 Target 行，反映设备当前的实际模式。
-func buildDeviceCurrentModeLine(a *AutoSwitchApp) string {
+// 行1: 性能模式 + Motion Sync
+// 行2: 回报率 + 追踪轨迹
+func buildDeviceCurrentModeLine(a *AutoSwitchApp) (line1 string, line2 string) {
 	if !a.LastAppliedOK() {
-		return "设备当前模式: 尚未同步到设备"
+		return "设备当前模式: 尚未同步到设备", ""
 	}
 	perf := a.LastAppliedPerf()
 	poll := a.LastAppliedPoll()
@@ -1101,6 +1095,7 @@ func buildDeviceCurrentModeLine(a *AutoSwitchApp) string {
 		trajNameCN = "稳定易控"
 	}
 
-	return fmt.Sprintf("性能模式: %s | Motion Sync: %s | 回报率: %dHz | 追踪轨迹: %s",
-		perfNameCN, msName, poll, trajNameCN)
+	line1 = fmt.Sprintf("性能模式: %s | Motion Sync: %s", perfNameCN, msName)
+	line2 = fmt.Sprintf("回报率: %dHz | 追踪轨迹: %s", poll, trajNameCN)
+	return line1, line2
 }
