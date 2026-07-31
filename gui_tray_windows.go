@@ -61,6 +61,7 @@ type guiState struct {
 	motionSyncButtons map[int]uintptr
 	pollButtons       map[PollingRate]uintptr
 	trajButtons       map[TrajectoryMode]uintptr
+	autoSwitchHW      uintptr
 	controls          []uintptr
 	separatorYs       []int32
 
@@ -198,6 +199,7 @@ const (
 	wsMinimizeBox = 0x00020000
 
 	bsAutoradio = 0x00000009
+	bsAutocheckbox = 0x00000003
 
 	swHide = 0
 	swShow = 5
@@ -211,6 +213,8 @@ const (
 	wmSetFont    = 0x0030
 	bstChecked   = 1
 	bstUnchecked = 0
+
+	bmGetCheck = 0x00F0
 
 	nimAdd        = 0x00000000
 	nimDelete     = 0x00000002
@@ -245,6 +249,8 @@ const (
 	idTrajSmooth = 1301
 	idTrajStable = 1302
 	idCaptureFG  = 1401
+
+	idAutoSwitch = 1501
 
 	idMenuOpen = 9001
 	idMenuExit = 9002
@@ -425,6 +431,8 @@ func (g *guiState) buildControls() {
 	y += secH + secGap
 	g.profileButtons[ProfileHit] = createRadio(g, leftColX, y, twoColW, rowH, idProfileHit, "高性能配置", true)
 	g.profileButtons[ProfileDefault] = createRadio(g, rightColX, y, twoColW, rowH, idProfileDefault, "省电用配置（默认配置）", false)
+	y += rowH + secGap
+	g.autoSwitchHW = createCheckBox(g, pad, y, winW-pad*2, rowH, idAutoSwitch, "自动切换启用中")
 	y += rowH + blkGap
 	g.separatorYs = append(g.separatorYs, y-(blkGap/2))
 
@@ -516,6 +524,26 @@ func createButton(g *guiState, x, y, w, h int32, id int, text string) uintptr {
 		uintptr(unsafe.Pointer(syscall.StringToUTF16Ptr("BUTTON"))),
 		uintptr(unsafe.Pointer(syscall.StringToUTF16Ptr(text))),
 		uintptr(wsChild|wsVisible|wsTabStop),
+		uintptr(x),
+		uintptr(y),
+		uintptr(w),
+		uintptr(h),
+		g.cfgHwnd,
+		uintptr(id),
+		g.hInstance,
+		0,
+	)
+	g.controls = append(g.controls, hwnd)
+	return hwnd
+}
+
+func createCheckBox(g *guiState, x, y, w, h int32, id int, text string) uintptr {
+	style := uintptr(wsChild | wsVisible | wsTabStop | bsAutocheckbox)
+	hwnd, _, _ := procCreateWindowExW.Call(
+		0,
+		uintptr(unsafe.Pointer(syscall.StringToUTF16Ptr("BUTTON"))),
+		uintptr(unsafe.Pointer(syscall.StringToUTF16Ptr(text))),
+		style,
 		uintptr(x),
 		uintptr(y),
 		uintptr(w),
@@ -690,16 +718,18 @@ func (g *guiState) handleCommand(id int) {
 	switch id {
 	case idProfileHit:
 		g.currentProfile = ProfileHit
+		g.maybePushCurrentProfileIfAutoOff()
 		g.syncControls()
 	case idProfileDefault:
 		g.currentProfile = ProfileDefault
+		g.maybePushCurrentProfileIfAutoOff()
 		g.syncControls()
 	case idMenuOpen:
 		g.showConfigWindow()
 	case idMenuExit:
 		g.close()
 	case idCaptureFG:
-		g.statusNote = "Foreground process append queued for 10 seconds later."
+		g.statusNote = "已排队在 10 秒后登记前台窗口"
 		g.scheduleForegroundAppend()
 		g.syncControls()
 	case idPerfCompetitive:
@@ -720,6 +750,8 @@ func (g *guiState) handleCommand(id int) {
 		g.applySelection(0, 0, TrajSmoothSensitive)
 	case idTrajStable:
 		g.applySelection(0, 0, TrajStableControl)
+	case idAutoSwitch:
+		g.toggleAutoSwitch()
 	}
 }
 
@@ -748,14 +780,59 @@ func (g *guiState) applySelection(perf PerfMode, poll PollingRate, traj Trajecto
 	}
 
 	if err := g.app.UpdateProfile(g.currentProfile, perf, poll, traj); err != nil {
-		g.statusNote = "Write config failed."
+		g.statusNote = "写入配置失败"
 		g.syncControls()
-		showMessageBox(g.cfgHwnd, "Write config failed", err.Error(), mbOK|mbIconError)
+		showMessageBox(g.cfgHwnd, "写入配置失败", err.Error(), mbOK|mbIconError)
 		return
 	}
 
-	g.statusNote = "Settings saved."
+	// 自动切换关闭时：GUI 手动操作直接推送到设备，绕过后台开关判断
+	if !g.app.CurrentConfig().AutoSwitchEnabled {
+		devs := FindAllVaxeeDevices()
+		if _, e := ApplyVaxeeProfileToAll(devs, perf, poll, traj); e == nil {
+			g.app.SetLastApplied(perf, poll, traj, true)
+		} else {
+			g.statusNote = "推送到设备失败"
+			showMessageBox(g.cfgHwnd, "推送到设备失败", e.Error(), mbOK|mbIconError)
+		}
+	}
+
+	g.statusNote = "设置已保存"
 	g.syncControls()
+}
+
+// toggleAutoSwitch 处理勾选框点击事件：根据最新勾选状态切换 AutoSwitchEnabled，
+// 保存到配置文件，并更新按钮文字与下一次界面刷新。
+func (g *guiState) toggleAutoSwitch() {
+	enabled := isCheckBoxChecked(g.autoSwitchHW)
+	if err := g.app.UpdateAutoSwitchEnabled(enabled); err != nil {
+		showMessageBox(g.cfgHwnd, "写入配置失败", err.Error(), mbOK|mbIconError)
+		g.syncControls()
+		return
+	}
+	g.syncControls()
+}
+
+// maybePushCurrentProfileIfAutoOff 仅在自动切换关闭时，把当前所选 Profile 的
+// 配置立即推送一次到设备（点击 高性能配置/省电用配置 单选按钮触发）。
+func (g *guiState) maybePushCurrentProfileIfAutoOff() {
+	if g.app.CurrentConfig().AutoSwitchEnabled {
+		return
+	}
+	cfg := g.app.CurrentConfig()
+	perf, poll, traj := currentProfileSettings(cfg, g.currentProfile)
+	devs := FindAllVaxeeDevices()
+	if _, e := ApplyVaxeeProfileToAll(devs, perf, poll, traj); e == nil {
+		g.app.SetLastApplied(perf, poll, traj, true)
+	}
+}
+
+// currentProfileSettings 返回指定 Profile 在当前配置下的具体设置。
+func currentProfileSettings(cfg *Config, profile ProfileKind) (PerfMode, PollingRate, TrajectoryMode) {
+	if profile == ProfileHit {
+		return cfg.HitMode, cfg.HitPoll, cfg.HitTraj
+	}
+	return cfg.DefaultMode, cfg.DefaultPoll, cfg.DefaultTraj
 }
 
 func decomposePerf(mode PerfMode) (base int, motionSync int) {
@@ -837,6 +914,14 @@ func (g *guiState) syncControls() {
 	for value, hwnd := range g.trajButtons {
 		setChecked(hwnd, value == traj)
 	}
+
+	// 自动切换开关勾选框：与配置文件状态同步，并更新按钮文字
+	setChecked(g.autoSwitchHW, cfg.AutoSwitchEnabled)
+	autoLabel := "自动切换未启用"
+	if cfg.AutoSwitchEnabled {
+		autoLabel = "自动切换启用中"
+	}
+	setWindowText(g.autoSwitchHW, autoLabel)
 
 	devCount := g.app.DevCount()
 	devErr := g.app.LastDevError()
@@ -953,6 +1038,12 @@ func setChecked(hwnd uintptr, checked bool) {
 		state = bstChecked
 	}
 	procSendMessageW.Call(hwnd, bmSetCheck, state, 0)
+}
+
+// isCheckBoxChecked 读取 BUTTON(BS_AUTOCHECKBOX) 的当前勾选状态。
+func isCheckBoxChecked(hwnd uintptr) bool {
+	r, _, _ := procSendMessageW.Call(hwnd, bmGetCheck, 0, 0)
+	return r == uintptr(bstChecked)
 }
 
 func setWindowText(hwnd uintptr, text string) {

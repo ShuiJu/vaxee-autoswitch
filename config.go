@@ -73,6 +73,9 @@ func parseTraj(s string) (TrajectoryMode, error) {
 type Config struct {
 	Interval time.Duration
 
+	// 自动切换总开关（false 时后台不推送设置到设备，仅轮询设备状态）
+	AutoSwitchEnabled bool
+
 	HitMode PerfMode
 	HitPoll PollingRate
 	HitTraj TrajectoryMode
@@ -109,6 +112,8 @@ func defaultConfigText() string {
 # 可配置项：
 # interval_seconds=1
 #
+# auto_switch=true              # 自动切换总开关(false=暂停后台推送;GUI手动按钮仍会推送)
+#
 # hit_mode=competitive_ms_off      # standard_ms_off / competitive_ms_off / competitive_ms_on / standard_ms_on
 # hit_poll=1000                    # 1000 / 2000 / 4000
 # hit_traj=smooth_sensitive        # smooth_sensitive / stable_control (顺滑灵敏/稳定易控)
@@ -119,6 +124,7 @@ func defaultConfigText() string {
 #
 # --------------------------------------------
 interval_seconds=1
+auto_switch=true
 
 hit_mode=competitive_ms_off
 hit_poll=1000
@@ -177,7 +183,8 @@ func formatConfig(cfg *Config) string {
 	var b strings.Builder
 	b.WriteString("# VAXEE AutoSwitch configuration\n")
 	b.WriteString("# Updates made from the tray GUI are written back immediately.\n\n")
-	fmt.Fprintf(&b, "interval_seconds=%d\n\n", int(cfg.Interval/time.Second))
+	fmt.Fprintf(&b, "interval_seconds=%d\n", int(cfg.Interval/time.Second))
+	fmt.Fprintf(&b, "auto_switch=%s\n\n", onOff(cfg.AutoSwitchEnabled))
 	fmt.Fprintf(&b, "hit_mode=%s\n", perfName(cfg.HitMode))
 	fmt.Fprintf(&b, "hit_poll=%d\n", cfg.HitPoll)
 	fmt.Fprintf(&b, "hit_traj=%s\n\n", trajName(cfg.HitTraj))
@@ -204,6 +211,8 @@ func loadConfig(path string) (*Config, time.Time, error) {
 
 	cfg := &Config{
 		Interval: 1 * time.Second,
+
+		AutoSwitchEnabled: true,
 
 		HitMode: PerfCompetitiveMSOff,
 		HitPoll: Poll1000,
@@ -242,6 +251,13 @@ func loadConfig(path string) (*Config, time.Time, error) {
 					return nil, time.Time{}, fmt.Errorf("invalid interval_seconds: %s", val)
 				}
 				cfg.Interval = time.Duration(sec) * time.Second
+
+			case "auto_switch":
+				b, e := parseBool(val)
+				if e != nil {
+					return nil, time.Time{}, e
+				}
+				cfg.AutoSwitchEnabled = b
 
 			case "hit_mode":
 				m, e := parsePerf(val)
@@ -325,6 +341,24 @@ func parseInt(s string) (int, error) {
 		n = n*10 + int(ch-'0')
 	}
 	return n, nil
+}
+
+func parseBool(s string) (bool, error) {
+	switch strings.ToLower(strings.TrimSpace(s)) {
+	case "1", "true", "on", "yes":
+		return true, nil
+	case "0", "false", "off", "no":
+		return false, nil
+	default:
+		return false, fmt.Errorf("invalid bool: %s", s)
+	}
+}
+
+func onOff(v bool) string {
+	if v {
+		return "on"
+	}
+	return "off"
 }
 
 func parsePerf(s string) (PerfMode, error) {

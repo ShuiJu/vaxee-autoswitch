@@ -82,7 +82,7 @@ func printBanner(cfgPath string) {
 }
 
 func printConfig(cfg *Config) {
-	log.Printf("[CFG] interval=%s", cfg.Interval)
+	log.Printf("[CFG] interval=%s auto_switch=%v", cfg.Interval, cfg.AutoSwitchEnabled)
 	log.Printf("[CFG] hit    : mode=%s poll=%dHz traj=%s", perfName(cfg.HitMode), cfg.HitPoll, trajName(cfg.HitTraj))
 	log.Printf("[CFG] default: mode=%s poll=%dHz traj=%s", perfName(cfg.DefaultMode), cfg.DefaultPoll, trajName(cfg.DefaultTraj))
 	log.Printf("[CFG] whitelist(%d): %s", len(cfg.Whitelist), strings.Join(cfg.Whitelist, ", "))
@@ -161,6 +161,12 @@ func tickOnce(cfg *Config, last *Applied) (switchMsg string, errStr string, devC
 	logicalCount = len(devs)
 	devCount = CountUniqueVaxeeDevices(devs)
 	deviceSig := VaxeeDeviceSetSignature(devs)
+
+	// 自动切换总开关关闭：后台仅轮询设备状态，不推送设置到设备
+	if !cfg.AutoSwitchEnabled {
+		return "", "", devCount, logicalCount, false, wantPerf, wantPoll, wantTraj
+	}
+
 	if last.ok && last.perf == wantPerf && last.poll == wantPoll && last.traj == wantTraj && last.devices == deviceSig {
 		return "", "", devCount, logicalCount, false, wantPerf, wantPoll, wantTraj
 	}

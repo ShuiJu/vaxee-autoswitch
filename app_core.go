@@ -212,6 +212,28 @@ func (a *AutoSwitchApp) UpdateProfile(profile ProfileKind, perf PerfMode, poll P
 	return nil
 }
 
+// UpdateAutoSwitchEnabled 切换自动切换总开关并保存到配置文件，
+// 唤醒后台以便下一次 tick 读取新状态（关闭时后台将不再推送设置到设备）。
+func (a *AutoSwitchApp) UpdateAutoSwitchEnabled(enabled bool) error {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+
+	next := cloneConfig(a.cfg)
+	next.AutoSwitchEnabled = enabled
+	if err := saveConfig(a.cfgPath, next); err != nil {
+		return err
+	}
+
+	reloaded, modTime, err := loadConfig(a.cfgPath)
+	if err != nil {
+		return err
+	}
+	a.cfg = reloaded
+	a.modTime = modTime
+	a.signalWake()
+	return nil
+}
+
 func (a *AutoSwitchApp) ScheduleForegroundAppend(delay time.Duration) {
 	a.mu.Lock()
 	a.captureRequest++
