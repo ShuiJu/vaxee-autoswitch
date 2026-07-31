@@ -1,7 +1,21 @@
 @echo off
 setlocal
 
-set "OUTPUT_EXE=vaxee-autoswitch.V0.4.2.1.exe"
+:: Read appVersion from version.go (line 5 in current file), filename follows version
+:: Layout assumption: line5 is `appVersion     = "Vx.y.z"`
+for /f "skip=4 tokens=3" %%a in (version.go) do (
+  set "APP_VERSION=%%a"
+  goto :end_ver
+)
+:end_ver
+if not defined APP_VERSION (
+  echo Failed to read appVersion from version.go
+  exit /b 1
+)
+:: Strip surrounding quotes -> Vx.y.z
+set "APP_VERSION=%APP_VERSION:~1,-1%"
+
+set "OUTPUT_EXE=vaxee-autoswitch.%APP_VERSION%.exe"
 set "RSRC_EXE=%USERPROFILE%\go\bin\rsrc.exe"
 set "SYSO_FILE=rsrc_windows_amd64.syso"
 

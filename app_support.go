@@ -139,10 +139,10 @@ func setThreadPowerThrottling(hThread uintptr) {
 	)
 }
 
-func tickOnce(cfg *Config, last *Applied) (switchMsg string, errStr string, devCount int, logicalCount int) {
+func tickOnce(cfg *Config, last *Applied) (switchMsg string, errStr string, devCount int, logicalCount int, switched bool, appliedPerf PerfMode, appliedPoll PollingRate, appliedTraj TrajectoryMode) {
 	proc, err := ForegroundProcessName()
 	if err != nil {
-		return "", "", 0, 0
+		return "", "", 0, 0, false, 0, 0, 0
 	}
 	proc = normalizeProcessName(proc)
 
@@ -162,12 +162,12 @@ func tickOnce(cfg *Config, last *Applied) (switchMsg string, errStr string, devC
 	devCount = CountUniqueVaxeeDevices(devs)
 	deviceSig := VaxeeDeviceSetSignature(devs)
 	if last.ok && last.perf == wantPerf && last.poll == wantPoll && last.traj == wantTraj && last.devices == deviceSig {
-		return "", "", devCount, logicalCount
+		return "", "", devCount, logicalCount, false, wantPerf, wantPoll, wantTraj
 	}
 
 	applied, err := ApplyVaxeeProfileToAll(devs, wantPerf, wantPoll, wantTraj)
 	if err != nil {
-		return "", "应用设置失败: " + err.Error(), devCount, logicalCount
+		return "", "应用设置失败: " + err.Error(), devCount, logicalCount, false, wantPerf, wantPoll, wantTraj
 	}
 
 	*last = Applied{perf: wantPerf, poll: wantPoll, traj: wantTraj, devices: deviceSig, ok: true}
@@ -175,10 +175,10 @@ func tickOnce(cfg *Config, last *Applied) (switchMsg string, errStr string, devC
 
 	if hit {
 		return fmt.Sprintf("[SWITCH] 命中白名单(%s) -> %s + %dHz + traj=%s",
-			proc, perfName(wantPerf), wantPoll, trajName(wantTraj)), "", devCount, logicalCount
+				proc, perfName(wantPerf), wantPoll, trajName(wantTraj)), "", devCount, logicalCount, true, wantPerf, wantPoll, wantTraj
 	}
 	return fmt.Sprintf("[SWITCH] 未命中白名单(%s) -> %s + %dHz + traj=%s",
-		proc, perfName(wantPerf), wantPoll, trajName(wantTraj)), "", devCount, logicalCount
+		proc, perfName(wantPerf), wantPoll, trajName(wantTraj)), "", devCount, logicalCount, true, wantPerf, wantPoll, wantTraj
 }
 
 func enumerateDevices() {

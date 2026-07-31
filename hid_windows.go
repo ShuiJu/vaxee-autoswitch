@@ -641,6 +641,15 @@ func VaxeePhysicalDeviceNames(devs []VaxeeDeviceInfo, aliases map[string]string)
 			continue
 		}
 
+		// 回退：从 HID Product / Manufacturer 字符串解析出真实设备名
+		// （例如 "VAXEE E1" -> "E1"，"VAXEE NP-01S V2" -> "NP01S V2"）
+		// vaxeeBatteryDeviceName 在拿不到有效字符串时会返回 "D{n}" 占位，
+		// 此处仍把占位当作未知设备处理。
+		if name := vaxeeBatteryDeviceName(dev, 0); !strings.HasPrefix(name, "D") {
+			names = append(names, name)
+			continue
+		}
+
 		names = append(names, fmt.Sprintf("未知设备[%s]", shortVaxeeKey(key)))
 	}
 	return names
@@ -670,7 +679,7 @@ func vaxeeDeviceAlias(dev VaxeeDeviceInfo, key string, aliases map[string]string
 
 var builtinVaxeeDeviceAliases = map[string]string{
 	"05e6f9e6-3cc8-11f1-a655-d8bbc1c6fbcf": "E1",
-	"aa6e40cd-32ab-11f1-a638-806e6f6e6963": "NP01S V2",
+	"5594f398-51e6-11f1-a675-bb83b5341d34": "NP-01S V2",
 }
 
 func shortVaxeeKey(key string) string {

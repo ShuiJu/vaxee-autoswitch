@@ -185,6 +185,9 @@ const (
 	wmLButtonDbl = 0x0203
 	wmRButtonUp  = 0x0205
 
+	// 内部自定义消息：后台自动切换流程结束后刷新界面
+	wmRefreshUI = 0x8000 + 2
+
 	wsOverlapped  = 0x00000000
 	wsCaption     = 0x00C00000
 	wsSysMenu     = 0x00080000
@@ -278,6 +281,14 @@ func runGUIApp() error {
 		trajButtons:       map[TrajectoryMode]uintptr{},
 	}
 	globalGUI = gui
+
+	// 注册回调：后台每次自动切换流程结束后，向配置窗口投递刷新消息，
+	// 由 UI 线程的 wndProc 处理，安全地重新轮询设备状态并更新界面。
+	app.SetUINotify(func() {
+		if globalGUI != nil && globalGUI.cfgHwnd != 0 {
+			procPostMessageW.Call(globalGUI.cfgHwnd, wmRefreshUI, 0, 0)
+		}
+	})
 
 	if err := gui.init(); err != nil {
 		cancel()
@@ -640,6 +651,12 @@ func guiWndProc(hwnd uintptr, msg uint32, wParam uintptr, lParam uintptr) uintpt
 			globalGUI.showTrayMenu()
 		}
 		return 0
+	case wmRefreshUI:
+		// 后台轮询/自动切换流程结束后触发一次界面刷新
+		if globalGUI.cfgHwnd != 0 {
+			globalGUI.syncControls()
+		}
+		return 0
 	}
 
 	r, _, _ := procDefWindowProcW.Call(hwnd, uintptr(msg), wParam, lParam)
@@ -822,7 +839,6 @@ func (g *guiState) syncControls() {
 	}
 
 	devCount := g.app.DevCount()
-	logicalCount := g.app.LogicalDevCount()
 	devErr := g.app.LastDevError()
 	switch {
 	case devErr != "":
@@ -838,20 +854,22 @@ func (g *guiState) syncControls() {
 		setWindowText(g.hdrStatusHW, "VAXEE Device: Scanning...")
 	}
 
-	deviceLine := fmt.Sprintf("Device: %d connected  |  settings sync to detected devices", devCount)
-	if logicalCount > devCount && devCount > 0 {
-		deviceLine = fmt.Sprintf("Device: %d connected  |  %d logical HID interfaces detected", devCount, logicalCount)
-	}
+	// Device 行：仅显示已连接物理设备数，不再附带 logical HID 信息
+	deviceLine := fmt.Sprintf("Device: %d Connected", devCount)
 	if devErr != "" {
 		deviceLine = fmt.Sprintf("Device: %s", devErr)
 	}
 
-	setWindowText(g.statusLines[0], fmt.Sprintf("Editing: %s  |  Config: %s", profileName(g.currentProfile), filepath.Base(cfg.ConfigPath)))
-	setWindowText(g.statusLines[1], deviceLine)
-	setWindowText(g.statusLines[2], fmt.Sprintf("Target: %s  |  Poll: %d Hz  |  Traj: %s", perfName(perf), poll, trajName(traj)))
+	setWindowText(g.statusLines[0], deviceLine)
+
+	// Target 行：显示读取到的设备当前实际模式（最后一次成功写入设备的设置）
+	targetLine := buildDeviceCurrentModeLine(g.app)
+	setWindowText(g.statusLines[1], targetLine)
+
 	batterySummary, batteryExtrema, _ := BatteryStatusLinesVAXEE()
-	setWindowText(g.statusLines[3], batterySummary)
-	setWindowText(g.statusLines[4], batteryExtrema)
+	setWindowText(g.statusLines[2], batterySummary)
+	setWindowText(g.statusLines[3], batteryExtrema)
+	setWindowText(g.statusLines[4], "")
 }
 
 func (g *guiState) scheduleForegroundAppend() {
@@ -965,4 +983,33 @@ func profileName(profile ProfileKind) string {
 		return "Hit"
 	}
 	return "Miss (Default)"
+}
+
+// buildDeviceCurrentModeLine 把最后一次成功写入设备的设置格式化为一行，
+// 用于 GUI 的 Target 行，反映设备当前的实际模式。
+func buildDeviceCurrentModeLine(a *AutoSwitchApp) string {
+	if !a.LastAppliedOK() {
+		return "设备当前模式: 尚未同步到设备"
+	}
+	perf := a.LastAppliedPerf()
+	poll := a.LastAppliedPoll()
+	traj := a.LastAppliedTraj()
+
+	base, motionSync := decomposePerf(perf)
+
+	perfNameCN := "竞技模式"
+	if base == 1 {
+		perfNameCN = "标准模式"
+	}
+	msName := "关闭"
+	if motionSync == 1 {
+		msName = "开启"
+	}
+	trajNameCN := "顺滑灵敏"
+	if traj == TrajStableControl {
+		trajNameCN = "稳定易控"
+	}
+
+	return fmt.Sprintf("性能模式: %s | Motion Sync: %s | 回报率: %dHz | 追踪轨迹: %s",
+		perfNameCN, msName, poll, trajNameCN)
 }

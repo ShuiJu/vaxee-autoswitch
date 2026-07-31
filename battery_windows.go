@@ -142,22 +142,51 @@ func BatteryStatusTextForDevicesVAXEE(devs []VaxeeDeviceInfo) string {
 
 func BatteryStatusLinesForDevicesVAXEE(devs []VaxeeDeviceInfo) (summary string, extrema string, tooltip string) {
 	if len(devs) == 0 {
-		return "电池电量统计: N/A", "最高电量设备: N/A | 最低电量设备: N/A", "暂无可用电量信息"
+		return "电池电量统计: N/A", "暂无可用电量信息", "暂无可用电量信息"
 	}
 
 	infos := ReadBatteryDetailsVAXEE(devs)
-	tipParts := make([]string, 0, len(infos))
-	var maxInfo VaxeeBatteryInfo
-	var minInfo VaxeeBatteryInfo
-	found := false
 
+	// tooltip 全量展示
+	tipParts := make([]string, 0, len(infos))
+	for _, info := range infos {
+		if info.OK {
+			tipParts = append(tipParts, fmt.Sprintf("%s: %d%% (%s)", info.Name, info.Percent, batteryStateText(info.Charging)))
+		} else {
+			tipParts = append(tipParts, fmt.Sprintf("%s: N/A", info.Name))
+		}
+	}
+	tooltip = strings.Join(tipParts, "\r\n")
+
+	// 1 个设备：单行就讲当前设备电量
+	if len(infos) == 1 {
+		info := infos[0]
+		if !info.OK {
+			return "当前设备电量: N/A", "", tooltip
+		}
+		return fmt.Sprintf("当前设备电量: %d%% (%s)", info.Percent, batteryStateText(info.Charging)), "", tooltip
+	}
+
+	// 2 个设备：单行讲"型号A: A% (state) | 型号B: B% (state)"
+	if len(infos) == 2 {
+		parts := make([]string, 0, 2)
+		for _, info := range infos {
+			if !info.OK {
+				parts = append(parts, fmt.Sprintf("%s: N/A", info.Name))
+				continue
+			}
+			parts = append(parts, fmt.Sprintf("%s: %d%% (%s)", info.Name, info.Percent, batteryStateText(info.Charging)))
+		}
+		return strings.Join(parts, " | "), "", tooltip
+	}
+
+	// 3+ 设备：维持最高/最低电量的描述方式
+	var maxInfo, minInfo VaxeeBatteryInfo
+	found := false
 	for _, info := range infos {
 		if !info.OK {
-			tipParts = append(tipParts, fmt.Sprintf("%s现在是 N/A", info.Name))
 			continue
 		}
-		tipParts = append(tipParts, fmt.Sprintf("%s现在是%d%%", info.Name, info.Percent))
-
 		if !found || info.Percent > maxInfo.Percent {
 			maxInfo = info
 		}
@@ -166,15 +195,12 @@ func BatteryStatusLinesForDevicesVAXEE(devs []VaxeeDeviceInfo) (summary string, 
 		}
 		found = true
 	}
-
 	if !found {
-		extrema = "最高电量设备: N/A | 最低电量设备: N/A"
-	} else {
-		extrema = fmt.Sprintf("最高电量设备: %d%% (%s) | 最低电量设备: %d%% (%s)",
-			maxInfo.Percent, batteryStateText(maxInfo.Charging),
-			minInfo.Percent, batteryStateText(minInfo.Charging))
+		return "电池电量统计:", "最高电量设备: N/A | 最低电量设备: N/A", tooltip
 	}
-	return "电池电量统计:", extrema, strings.Join(tipParts, "\r\n")
+	return "电池电量统计:", fmt.Sprintf("最高电量设备: %d%% (%s) | 最低电量设备: %d%% (%s)",
+		maxInfo.Percent, batteryStateText(maxInfo.Charging),
+		minInfo.Percent, batteryStateText(minInfo.Charging)), tooltip
 }
 
 func ReadBatteryDetailsVAXEE(devs []VaxeeDeviceInfo) []VaxeeBatteryInfo {
@@ -199,6 +225,13 @@ func batteryStateText(charging bool) string {
 }
 
 func vaxeeBatteryDeviceName(dev VaxeeDeviceInfo, idx int) string {
+	// 优先使用 ContainerID 别名（与界面头部保持一致），避免接收器通用
+	// Product 字符串（如 "4K Wireless 1.0"）覆盖掉 E1 等已知设备名。
+	key := vaxeeDeviceKey(dev)
+	if alias := vaxeeDeviceAlias(dev, key, nil); alias != "" {
+		return alias
+	}
+
 	name := strings.TrimSpace(dev.Product)
 	if name == "" {
 		name = strings.TrimSpace(dev.Manufacturer)
@@ -209,12 +242,7 @@ func vaxeeBatteryDeviceName(dev VaxeeDeviceInfo, idx int) string {
 
 	name = strings.TrimSpace(stripLeadingFold(name, "VAXEE"))
 	name = strings.TrimSpace(stripLeadingFold(name, "ZYGEN"))
-	name = strings.NewReplacer(
-		"NP-01S", "NP01S",
-		"NP-01", "NP01",
-		"np-01s", "NP01S",
-		"np-01", "NP01",
-	).Replace(name)
+	name = strings.TrimSpace(name)
 	if name == "" {
 		return fmt.Sprintf("D%d", idx+1)
 	}

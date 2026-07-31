@@ -28,6 +28,12 @@ type AutoSwitchApp struct {
 	lastLogicalCount int
 	devErrMu         sync.RWMutex
 
+	lastApplied    Applied
+	appliedMu      sync.RWMutex
+
+	uiNotify   func()
+	uiNotifyMu sync.RWMutex
+
 	wakeCh         chan struct{}
 	captureRequest uint64
 }
@@ -64,6 +70,51 @@ func (a *AutoSwitchApp) SetDevState(err string, count int, logicalCount int) {
 	a.lastLogicalCount = logicalCount
 }
 
+func (a *AutoSwitchApp) SetLastApplied(perf PerfMode, poll PollingRate, traj TrajectoryMode, ok bool) {
+	a.appliedMu.Lock()
+	defer a.appliedMu.Unlock()
+	a.lastApplied = Applied{perf: perf, poll: poll, traj: traj, ok: ok}
+}
+
+func (a *AutoSwitchApp) LastAppliedPerf() PerfMode {
+	a.appliedMu.RLock()
+	defer a.appliedMu.RUnlock()
+	return a.lastApplied.perf
+}
+
+func (a *AutoSwitchApp) LastAppliedPoll() PollingRate {
+	a.appliedMu.RLock()
+	defer a.appliedMu.RUnlock()
+	return a.lastApplied.poll
+}
+
+func (a *AutoSwitchApp) LastAppliedTraj() TrajectoryMode {
+	a.appliedMu.RLock()
+	defer a.appliedMu.RUnlock()
+	return a.lastApplied.traj
+}
+
+func (a *AutoSwitchApp) LastAppliedOK() bool {
+	a.appliedMu.RLock()
+	defer a.appliedMu.RUnlock()
+	return a.lastApplied.ok
+}
+
+func (a *AutoSwitchApp) SetUINotify(fn func()) {
+	a.uiNotifyMu.Lock()
+	defer a.uiNotifyMu.Unlock()
+	a.uiNotify = fn
+}
+
+func (a *AutoSwitchApp) notifyUI() {
+	a.uiNotifyMu.RLock()
+	fn := a.uiNotify
+	a.uiNotifyMu.RUnlock()
+	if fn != nil {
+		fn()
+	}
+}
+
 func (a *AutoSwitchApp) LastDevError() string {
 	a.devErrMu.RLock()
 	defer a.devErrMu.RUnlock()
@@ -92,12 +143,25 @@ func (a *AutoSwitchApp) Run(ctx context.Context) error {
 		a.reloadConfigIfChanged()
 		cfg := a.CurrentConfig()
 
-		switchMsg, errStr, devCount, logicalCount := tickOnce(cfg, &last)
+		switchMsg, errStr, devCount, logicalCount, switched, appliedPerf, appliedPoll, appliedTraj := tickOnce(cfg, &last)
 		if switchMsg != "" {
 			log.Print(switchMsg)
 		}
 		handleError(&lastErr, errStr)
+
+		// 切换配置后立即重新轮询一次设备状态，保证界面拿到最新状态
+		if switched {
+			refreshDevs := FindAllVaxeeDevices()
+			devCount = CountUniqueVaxeeDevices(refreshDevs)
+			logicalCount = len(refreshDevs)
+		}
 		a.SetDevState(errStr, devCount, logicalCount)
+		a.SetLastApplied(appliedPerf, appliedPoll, appliedTraj, last.ok)
+
+		// 通知 GUI 刷新界面（自动切换流程结束后）
+		if switched {
+			a.notifyUI()
+		}
 
 		timer := time.NewTimer(cfg.Interval)
 		select {
