@@ -280,6 +280,9 @@ func (a *AutoSwitchApp) appendForegroundProcess(requestID uint64) error {
 	a.modTime = modTime
 	a.signalWake()
 
+	// 登记成功后播放一声系统默认 OK 提示音
+	playSystemBeep(beepOK)
+
 	log.Printf("[CFG] appended delayed foreground process: %s", proc)
 	return nil
 }
